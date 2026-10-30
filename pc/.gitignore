@@ -1,0 +1,6 @@
+data/
+bin/
+experiments/
+configs/config.json
+configs/config.local.json
+configs/*.local.json

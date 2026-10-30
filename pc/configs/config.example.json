@@ -1,0 +1,54 @@
+{
+  "server": {
+    "addr": "0.0.0.0:18082",
+    "name": "",
+    "max_upload_mb": 512
+  },
+  "storage": {
+    "dir": "./data",
+    "audio_keep_days": 7,
+    "job_keep_days": 30
+  },
+  "pipeline": {
+    "mode": "local",
+    "workers": 1,
+    "queue": 100,
+    "job_timeout_seconds": 1800
+  },
+  "merge": {
+    "max_minutes": 120,
+    "max_jobs": 100,
+    "ffmpeg": "",
+    "ffprobe": ""
+  },
+  "worker": {
+    "url": "http://127.0.0.1:18090",
+    "timeout_seconds": 1800
+  },
+  "lmstudio": {
+    "base_url": "http://127.0.0.1:1234/v1",
+    "api_key": "lm-studio",
+    "model": "qwen2.5-7b-instruct",
+    "reasoning_effort": "none",
+    "max_tokens": 1024,
+    "temperature": 0,
+    "timeout_seconds": 300,
+    "json_mode": true
+  },
+  "remote_asr": {
+    "base_url": "",
+    "api_key": "",
+    "model": ""
+  },
+  "daily_report": {
+    "enabled": true,
+    "generate_at": "18:00",
+    "title": "录音日报",
+    "keep_days": 30
+  },
+  "pairing": {
+    "discovery_port": 18083,
+    "window_minutes": 10,
+    "devices_file": "./data/devices.json"
+  }
+}

@@ -1,0 +1,3 @@
+rootProject.name = "RecNonstop"
+include ':app'
+include ':micgrab'

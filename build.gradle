@@ -1,0 +1,28 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.3'
+    }
+}
+
+// 本地构建可把产物目录指到仓库外（例如 /path/to/private/build/android）
+def recnonstopBuildDir = project.findProperty("recnonstopBuildDir") ?: System.getenv("RECNONSTOP_BUILD_DIR")
+if (recnonstopBuildDir) {
+    subprojects {
+        layout.buildDirectory.set(new File(recnonstopBuildDir, project.name))
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+}
