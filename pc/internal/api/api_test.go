@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +14,116 @@ import (
 	"time"
 
 	"warehouse-audio/internal/identity"
+	"warehouse-audio/internal/job"
 	"warehouse-audio/internal/pairing"
 	"warehouse-audio/internal/report"
 )
+
+type reportFunc func(context.Context, string) (string, error)
+
+func (f reportFunc) GenerateDailyReport(ctx context.Context, material string) (string, error) {
+	return f(ctx, material)
+}
+
+func TestManualReportGenerationDeadline(t *testing.T) {
+	for _, parentTimeout := range []time.Duration{0, time.Minute} {
+		t.Run(parentTimeout.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			js, err := job.NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, start, _, err := report.PeriodFor(time.Now(), "18:00")
+			if err != nil {
+				t.Fatal(err)
+			}
+			js.CreateFull(&job.Job{ID: "synthetic", Status: job.StatusDone,
+				RecordedAt: start.Add(time.Minute).UnixMilli(),
+				Result:     &job.Result{Duration: 60, Segments: []job.Segment{{Text: "合成日报材料。"}}}})
+			rs, err := report.NewStore(filepath.Join(dir, "reports"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			if parentTimeout > 0 {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), parentTimeout)
+			}
+			defer cancel()
+			var deadline time.Time
+			reporter := reportFunc(func(ctx context.Context, material string) (string, error) {
+				deadline, _ = ctx.Deadline()
+				return "## 今日概览\n\n合成日报。", nil
+			})
+			sched := report.NewScheduler(rs, js, reporter, filepath.Join(dir, "report_settings.json"),
+				"录音日报", report.Settings{Enabled: true, GenerateAt: "18:00"})
+			srv := &Server{Reports: rs, ReportScheduler: sched}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reports/generate", nil).WithContext(ctx)
+			req.RemoteAddr = "127.0.0.1:5555"
+			out := httptest.NewRecorder()
+			started := time.Now()
+			srv.Handler().ServeHTTP(out, req)
+			if out.Code != http.StatusOK || deadline.IsZero() {
+				t.Fatalf("manual report did not reach reporter with deadline: status=%d body=%s", out.Code, out.Body.String())
+			}
+			if parentTimeout > 0 {
+				want, _ := ctx.Deadline()
+				if !deadline.Equal(want) {
+					t.Errorf("parent deadline extended: got %v want %v", deadline, want)
+				}
+			} else if budget := deadline.Sub(started); budget < time.Hour-5*time.Second || budget > time.Hour+5*time.Second {
+				t.Errorf("manual full-day report budget = %v, want one hour", budget)
+			}
+		})
+	}
+}
+
+type uploadSink struct {
+	buffer   bytes.Buffer
+	writeErr error
+	closeErr error
+	closed   bool
+}
+
+func (s *uploadSink) Write(p []byte) (int, error) {
+	if s.writeErr != nil {
+		return 0, s.writeErr
+	}
+	return s.buffer.Write(p)
+}
+
+func (s *uploadSink) Close() error {
+	s.closed = true
+	return s.closeErr
+}
+
+func TestSaveUploadDistinguishesStorageFailureFromOversize(t *testing.T) {
+	storageErr := errors.New("synthetic storage failure")
+	for _, tc := range []struct {
+		name     string
+		input    string
+		sink     uploadSink
+		wantCode int
+	}{
+		{"saved", "1234", uploadSink{}, http.StatusOK},
+		{"oversize", "12345", uploadSink{}, http.StatusRequestEntityTooLarge},
+		{"disk full", "1234", uploadSink{writeErr: storageErr}, http.StatusInternalServerError},
+		{"close failed", "1234", uploadSink{closeErr: storageErr}, http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, err := saveUpload(&tc.sink, strings.NewReader(tc.input), 4)
+			if status != tc.wantCode || (err == nil) != (status == http.StatusOK) {
+				t.Fatalf("status=%d err=%v, want %d", status, err, tc.wantCode)
+			}
+			if !tc.sink.closed {
+				t.Fatal("upload file was not closed")
+			}
+			if tc.wantCode == http.StatusInternalServerError && !errors.Is(err, storageErr) {
+				t.Fatalf("storage cause lost: %v", err)
+			}
+		})
+	}
+}
 
 func TestAllowedExt(t *testing.T) {
 	if _, ok := allowedExt("a.aac"); !ok {
@@ -240,5 +350,179 @@ func TestAdminBlocksCrossSite(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("same-origin status = %d", rec.Code)
+	}
+}
+
+func TestManualReportGenerationDateRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		remote string
+		site   string
+		method string
+		status int
+	}{
+		{name: "empty body", status: http.StatusOK},
+		{name: "empty object", body: `{}`, status: http.StatusOK},
+		{name: "historical", body: `{"date":"2001-02-03"}`, status: http.StatusOK},
+		{name: "today", body: `{"date":"` + time.Now().Format("2006-01-02") + `"}`, status: http.StatusOK},
+		{name: "explicit empty date", body: `{"date":""}`, status: http.StatusBadRequest},
+		{name: "blank date", body: `{"date":" "}`, status: http.StatusBadRequest},
+		{name: "invalid calendar date", body: `{"date":"2001-02-30"}`, status: http.StatusBadRequest},
+		{name: "not strict date", body: `{"date":"2001-2-3"}`, status: http.StatusBadRequest},
+		{name: "future date", body: `{"date":"2999-01-01"}`, status: http.StatusBadRequest},
+		{name: "null date", body: `{"date":null}`, status: http.StatusBadRequest},
+		{name: "numeric date", body: `{"date":20010203}`, status: http.StatusBadRequest},
+		{name: "null body", body: `null`, status: http.StatusBadRequest},
+		{name: "array body", body: `[]`, status: http.StatusBadRequest},
+		{name: "unknown field", body: `{"day":"2001-02-03"}`, status: http.StatusBadRequest},
+		{name: "duplicate date", body: `{"date":"2001-02-03","date":"2001-02-04"}`, status: http.StatusBadRequest},
+		{name: "second JSON", body: `{"date":"2001-02-03"}{}`, status: http.StatusBadRequest},
+		{name: "trailing text", body: `{"date":"2001-02-03"} trailing`, status: http.StatusBadRequest},
+		{name: "truncated JSON", body: `{"date":"2001-02-03"`, status: http.StatusBadRequest},
+		{name: "oversize", body: `{}` + strings.Repeat(" ", 1023), status: http.StatusBadRequest},
+		{name: "nonlocal", body: `{"date":"2001-02-03"}`, remote: "192.0.2.10:1234", status: http.StatusForbidden},
+		{name: "cross site", body: `{"date":"2001-02-03"}`, site: "cross-site", status: http.StatusForbidden},
+		{name: "wrong method", body: `{"date":"2001-02-03"}`, method: http.MethodGet, status: http.StatusMethodNotAllowed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			js, err := job.NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rs, err := report.NewStore(filepath.Join(dir, "reports"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sched := report.NewScheduler(rs, js, reportFunc(func(context.Context, string) (string, error) {
+				t.Fatal("empty store or rejected request should not reach reporter")
+				return "", nil
+			}), filepath.Join(dir, "settings.json"), "合成日报", report.Settings{GenerateAt: "18:00"})
+			srv := &Server{Reports: rs, ReportScheduler: sched}
+			method := tc.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			req := httptest.NewRequest(method, "/api/v1/admin/reports/generate", strings.NewReader(tc.body))
+			req.RemoteAddr = tc.remote
+			if req.RemoteAddr == "" {
+				req.RemoteAddr = "127.0.0.1:5555"
+			}
+			if tc.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.site)
+			}
+			out := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(out, req)
+			if out.Code != tc.status {
+				t.Fatalf("status = %d want %d; body %s", out.Code, tc.status, out.Body.String())
+			}
+			if tc.status != http.StatusOK {
+				if len(rs.List(100)) != 0 {
+					t.Fatal("rejected request created a report")
+				}
+				return
+			}
+			var got report.Report
+			if err := json.Unmarshal(out.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			want := time.Now().Format("2006-01-02")
+			if tc.name == "historical" {
+				want = "2001-02-03"
+			}
+			if got.Date != want || len(rs.List(100)) != 1 {
+				t.Fatalf("wrong default/explicit date: %+v", got)
+			}
+		})
+	}
+}
+
+func TestManualHistoricalReportPreservesVersionsAndDeadline(t *testing.T) {
+	dir := t.TempDir()
+	js, err := job.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2001, 2, 3, 0, 0, 0, 0, time.Local)
+	for i, sample := range []struct {
+		at   time.Time
+		text string
+	}{
+		{start.Add(23 * time.Hour), "晚间仍属于该日的原文"},
+		{start.AddDate(0, 0, 1), "次日的原文不可纳入"},
+	} {
+		id := []string{"late", "next"}[i]
+		js.CreateFull(&job.Job{ID: id, Status: job.StatusDone, RecordedAt: sample.at.UnixMilli(),
+			Result: &job.Result{Duration: 60, Segments: []job.Segment{{Text: sample.text}}}})
+	}
+	rs, err := report.NewStore(filepath.Join(dir, "reports"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	wantDeadline, _ := ctx.Deadline()
+	calls := 0
+	reporter := reportFunc(func(ctx context.Context, material string) (string, error) {
+		calls++
+		deadline, ok := ctx.Deadline()
+		if !ok || !deadline.Equal(wantDeadline) {
+			t.Error("historical request extended its parent deadline")
+		}
+		if !strings.Contains(material, "晚间仍属于该日的原文") || strings.Contains(material, "次日的原文不可纳入") {
+			t.Error("historical request did not use the full local day")
+		}
+		return "合成历史汇总。", nil
+	})
+	sched := report.NewScheduler(rs, js, reporter, filepath.Join(dir, "settings.json"), "合成日报",
+		report.Settings{GenerateAt: "18:00"})
+	srv := &Server{Reports: rs, ReportScheduler: sched}
+	var previousID string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reports/generate",
+			strings.NewReader(`{"date":"2001-02-03"}`)).WithContext(ctx)
+		req.RemoteAddr = "127.0.0.1:5555"
+		out := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(out, req)
+		if out.Code != http.StatusOK {
+			t.Fatalf("historical generation failed: %d %s", out.Code, out.Body.String())
+		}
+		var got report.Report
+		if err := json.Unmarshal(out.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ID == previousID || got.JobCount != 1 || got.Date != "2001-02-03" ||
+			!got.PeriodStart.Equal(start) || !got.PeriodEnd.Equal(start.AddDate(0, 0, 1)) {
+			t.Fatalf("wrong historical report or overwritten ID: %+v", got)
+		}
+		previousID = got.ID
+	}
+	if calls != 2 || len(rs.List(100)) != 2 {
+		t.Fatal("historical regeneration did not retain both versions")
+	}
+}
+
+func TestCanceledManualHistoricalReportCreatesNoVersion(t *testing.T) {
+	dir := t.TempDir()
+	js, err := job.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := report.NewStore(filepath.Join(dir, "reports"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := report.NewScheduler(rs, js, nil, filepath.Join(dir, "settings.json"), "合成日报", report.Settings{GenerateAt: "18:00"})
+	srv := &Server{Reports: rs, ReportScheduler: sched}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reports/generate",
+		strings.NewReader(`{"date":"2001-02-03"}`)).WithContext(ctx)
+	req.RemoteAddr = "127.0.0.1:5555"
+	out := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(out, req)
+	if out.Code == http.StatusOK || len(rs.List(100)) != 0 {
+		t.Fatal("already canceled request created a successful report")
 	}
 }

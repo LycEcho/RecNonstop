@@ -11,11 +11,10 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:clipChildren="false"
         android:orientation="vertical"
-        android:paddingLeft="20dp"
-        android:paddingTop="6dp"
-        android:paddingRight="20dp"
+        android:paddingStart="20dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="20dp"
         android:paddingBottom="24dp">
 
         <LinearLayout
@@ -23,179 +22,187 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@drawable/bg_hero"
-            android:clipChildren="false"
-            android:elevation="3dp"
             android:orientation="vertical"
             android:padding="20dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="48dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
                 <View
                     android:id="@+id/heroDot"
-                    android:layout_width="9dp"
-                    android:layout_height="9dp"
+                    android:layout_width="7dp"
+                    android:layout_height="7dp"
                     android:background="@drawable/bg_dot_gray" />
 
                 <TextView
                     android:id="@+id/tvHeroStatus"
-                    android:layout_width="wrap_content"
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:accessibilityLiveRegion="polite"
                     android:fontFamily="sans-serif-medium"
-                    android:text="待机中"
-                    android:textColor="@color/hero_text_soft"
-                    android:textSize="14sp" />
-
-                <Space
-                    android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:layout_weight="1" />
+                    android:text="准备就绪"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/tvHeroBadge"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:layout_height="48dp"
                     android:background="@drawable/bg_pill_dark"
                     android:clickable="true"
+                    android:contentDescription="设置录音分段时长"
                     android:focusable="true"
-                    android:foreground="?android:attr/selectableItemBackgroundBorderless"
-                    android:paddingLeft="11dp"
-                    android:paddingTop="5dp"
-                    android:paddingRight="11dp"
-                    android:paddingBottom="5dp"
+                    android:foreground="?android:attr/selectableItemBackground"
+                    android:gravity="center"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
                     android:text="3 分钟/段"
-                    android:textColor="@color/hero_text_soft"
+                    android:textColor="@color/brand"
                     android:textSize="11sp" />
             </LinearLayout>
 
-            <LinearLayout
+            <TextView
+                android:id="@+id/tvHeroTime"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="12dp"
+                android:autoSizeMaxTextSize="48sp"
+                android:autoSizeMinTextSize="28sp"
+                android:autoSizeStepGranularity="1sp"
+                android:autoSizeTextType="uniform"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:text="00:00:00"
+                android:textColor="@color/text_primary"
+                android:textSize="48sp" />
+
+            <TextView
+                android:id="@+id/tvHeroHint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:gravity="center"
+                android:lineSpacingExtra="2dp"
+                android:text="按下开始，记录此刻"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <com.recnonstop.app.RecordingWaveformView
+                android:id="@+id/recordingWaveform"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
                 android:layout_marginTop="14dp"
-                android:clipChildren="false"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:layout_marginBottom="14dp"
+                android:contentDescription="实时录音音量"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:id="@+id/tvSegmentInfo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="分段保存 · 每 3 分钟一段"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <ProgressBar
+                android:id="@+id/segmentProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="3dp"
+                android:layout_marginTop="8dp"
+                android:contentDescription="当前录音分段进度"
+                android:max="100"
+                android:maxHeight="3dp"
+                android:minHeight="3dp"
+                android:progress="0"
+                android:progressDrawable="@drawable/bg_progress" />
+
+            <FrameLayout
+                android:id="@+id/recordButton"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_record_button"
+                android:clickable="true"
+                android:contentDescription="开始录音"
+                android:focusable="true">
+
+                <View
+                    android:id="@+id/pulseRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/bg_pulse_ring"
+                    android:visibility="gone" />
 
                 <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:id="@+id/tvHeroTime"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:autoSizeMaxTextSize="38sp"
-                        android:autoSizeMinTextSize="24sp"
-                        android:autoSizeStepGranularity="2sp"
-                        android:autoSizeTextType="uniform"
-                        android:fontFamily="monospace"
-                        android:includeFontPadding="false"
-                        android:maxLines="1"
-                        android:text="00:00:00"
-                        android:textColor="@color/white"
-                        android:textSize="38sp" />
-
-                    <TextView
-                        android:id="@+id/tvHeroHint"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="点右侧按钮开始录音"
-                        android:textColor="@color/hero_text_dim"
-                        android:textSize="12sp" />
-
-                    <TextView
-                        android:id="@+id/tvSegmentInfo"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:text="分段保存 · 每 3 分钟一段"
-                        android:textColor="@color/hero_text_dim"
-                        android:textSize="12sp" />
-
-                    <ProgressBar
-                        android:id="@+id/segmentProgress"
-                        style="?android:attr/progressBarStyleHorizontal"
-                        android:layout_width="match_parent"
-                        android:layout_height="6dp"
-                        android:layout_marginTop="8dp"
-                        android:max="100"
-                        android:maxHeight="6dp"
-                        android:minHeight="6dp"
-                        android:progress="0"
-                        android:progressDrawable="@drawable/bg_progress" />
-                </LinearLayout>
-
-                <FrameLayout
-                    android:id="@+id/recordButton"
-                    android:layout_width="88dp"
-                    android:layout_height="88dp"
-                    android:layout_marginStart="16dp"
-                    android:background="@drawable/bg_record_button"
-                    android:clickable="true"
-                    android:clipChildren="false"
-                    android:contentDescription="开始或停止录音"
-                    android:elevation="4dp"
-                    android:focusable="true">
-
-                    <View
-                        android:id="@+id/pulseRing"
-                        android:layout_width="88dp"
-                        android:layout_height="88dp"
-                        android:layout_gravity="center"
-                        android:background="@drawable/bg_pulse_ring"
-                        android:visibility="gone" />
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="center"
+                    android:gravity="center"
+                    android:importantForAccessibility="noHideDescendants"
+                    android:orientation="horizontal">
 
                     <ImageView
                         android:id="@+id/recordIcon"
-                        android:layout_width="36dp"
-                        android:layout_height="36dp"
-                        android:layout_gravity="center"
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
                         android:contentDescription="@null"
                         android:src="@drawable/ic_mic"
-                        android:tint="@color/brand" />
-                </FrameLayout>
-            </LinearLayout>
+                        android:tint="@color/text_primary" />
+
+                    <TextView
+                        android:id="@+id/tvRecordAction"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="开始录音"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+                </LinearLayout>
+            </FrameLayout>
 
             <TextView
                 android:id="@+id/tvHeroSub"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="来电自动暂停，挂断后自动续录"
-                android:textColor="@color/hero_text_dim"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:lineSpacingExtra="2dp"
+                android:text="来电自动暂停 · 挂断自动继续"
+                android:textColor="@color/text_secondary"
                 android:textSize="11sp" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal">
+            android:layout_marginTop="20dp"
+            android:baselineAligned="false"
+            android:orientation="horizontal"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp">
 
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="86dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="@drawable/bg_card"
-                android:clipToOutline="true"
-                android:elevation="1dp"
-                android:gravity="center_vertical"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:paddingStart="4dp">
 
                 <TextView
                     android:id="@+id/tvStatSegments"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:autoSizeMaxTextSize="22sp"
-                    android:autoSizeMinTextSize="14sp"
+                    android:autoSizeMaxTextSize="24sp"
+                    android:autoSizeMinTextSize="16sp"
                     android:autoSizeStepGranularity="1sp"
                     android:autoSizeTextType="uniform"
                     android:fontFamily="sans-serif-medium"
@@ -203,71 +210,73 @@
                     android:maxLines="1"
                     android:text="0"
                     android:textColor="@color/text_primary"
-                    android:textSize="22sp" />
+                    android:textSize="24sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:text="今日段数"
+                    android:layout_marginTop="6dp"
+                    android:text="今日分段"
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp" />
             </LinearLayout>
 
+            <View
+                android:layout_width="1dp"
+                android:layout_height="38dp"
+                android:layout_gravity="center_vertical"
+                android:layout_marginEnd="16dp"
+                android:background="@color/divider" />
+
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="86dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="@drawable/bg_card"
-                android:clipToOutline="true"
-                android:elevation="1dp"
-                android:gravity="center_vertical"
-                android:orientation="vertical"
-                android:padding="14dp">
+                android:orientation="vertical">
 
                 <TextView
                     android:id="@+id/tvStatBytes"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:autoSizeMaxTextSize="22sp"
-                    android:autoSizeMinTextSize="14sp"
+                    android:autoSizeMaxTextSize="24sp"
+                    android:autoSizeMinTextSize="16sp"
                     android:autoSizeStepGranularity="1sp"
                     android:autoSizeTextType="uniform"
                     android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
                     android:maxLines="1"
-                    android:text="0 MB"
+                    android:text="0 B"
                     android:textColor="@color/text_primary"
-                    android:textSize="22sp" />
+                    android:textSize="24sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:text="今日大小"
+                    android:layout_marginTop="6dp"
+                    android:text="今日容量"
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp" />
             </LinearLayout>
 
+            <View
+                android:layout_width="1dp"
+                android:layout_height="38dp"
+                android:layout_gravity="center_vertical"
+                android:layout_marginEnd="16dp"
+                android:background="@color/divider" />
+
             <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="86dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="@drawable/bg_card"
-                android:clipToOutline="true"
-                android:elevation="1dp"
-                android:gravity="center_vertical"
-                android:orientation="vertical"
-                android:padding="14dp">
+                android:orientation="vertical">
 
                 <TextView
                     android:id="@+id/tvStatGaps"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:autoSizeMaxTextSize="22sp"
-                    android:autoSizeMinTextSize="14sp"
+                    android:autoSizeMaxTextSize="24sp"
+                    android:autoSizeMinTextSize="16sp"
                     android:autoSizeStepGranularity="1sp"
                     android:autoSizeTextType="uniform"
                     android:fontFamily="sans-serif-medium"
@@ -275,13 +284,13 @@
                     android:maxLines="1"
                     android:text="0"
                     android:textColor="@color/text_primary"
-                    android:textSize="22sp" />
+                    android:textSize="24sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:text="通话空档"
+                    android:layout_marginTop="6dp"
+                    android:text="录音空档"
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp" />
             </LinearLayout>
@@ -291,30 +300,23 @@
             android:id="@+id/attentionCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="18dp"
             android:background="@drawable/bg_warn_card"
             android:clickable="true"
-            android:clipToOutline="true"
             android:focusable="true"
             android:foreground="?android:attr/selectableItemBackground"
             android:gravity="center_vertical"
+            android:minHeight="64dp"
             android:orientation="horizontal"
             android:padding="14dp"
             android:visibility="gone">
 
-            <FrameLayout
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:background="@drawable/bg_icon_soft_amber">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_alert"
-                    android:tint="@color/warning" />
-            </FrameLayout>
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_alert"
+                android:tint="@color/warning" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -329,21 +331,22 @@
                     android:layout_height="wrap_content"
                     android:fontFamily="sans-serif-medium"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
 
                 <TextView
                     android:id="@+id/tvAttentionDesc"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:maxLines="2"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="2dp"
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <ImageView
                 android:layout_width="18dp"
                 android:layout_height="18dp"
+                android:layout_marginStart="8dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_chevron"
                 android:tint="@color/warning" />
@@ -351,8 +354,8 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
+            android:layout_height="48dp"
+            android:layout_marginTop="20dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -360,32 +363,30 @@
                 style="@style/SectionHeader"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
                 android:layout_weight="1"
-                android:text="最近录音" />
+                android:text="最近记录" />
 
             <TextView
                 android:id="@+id/btnSeeAll"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="48dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
                 android:focusable="true"
-                android:fontFamily="sans-serif-medium"
-                android:padding="8dp"
-                android:text="全部"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp"
+                android:text="查看全部"
                 android:textColor="@color/brand"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/recentContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
             android:background="@drawable/bg_card"
             android:clipToOutline="true"
-            android:elevation="1dp"
             android:orientation="vertical" />
 
     </LinearLayout>

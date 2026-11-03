@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg"
@@ -9,83 +10,119 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
         android:orientation="horizontal"
+        android:gravity="center_vertical"
         android:paddingLeft="12dp"
-        android:paddingTop="10dp"
         android:paddingRight="16dp"
-        android:paddingBottom="8dp">
+        android:paddingTop="8dp"
+        android:paddingBottom="12dp">
 
         <TextView
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:id="@+id/btnDetailBack"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@drawable/bg_filter_chip"
+            android:text="‹"
+            android:textSize="30sp"
+            android:textColor="@color/text_primary"
+            android:includeFontPadding="false"
+            android:gravity="center"
+            android:background="@drawable/bg_ripple_transparent"
             android:clickable="true"
             android:focusable="true"
-            android:gravity="center"
-            android:text="‹"
-            android:textColor="@color/text_primary"
-            android:textSize="28sp" />
+            android:contentDescription="返回" />
 
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
+            android:orientation="vertical"
             android:layout_weight="1"
-            android:orientation="vertical">
+            android:layout_marginStart="6dp">
 
             <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:id="@+id/tvDetailTitle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-medium"
-                android:includeFontPadding="false"
-                android:text="对话时间线"
+                android:text="录音日报"
+                android:textSize="18sp"
                 android:textColor="@color/text_primary"
-                android:textSize="20sp" />
+                android:includeFontPadding="false"
+                android:fontFamily="sans-serif-medium"
+                android:maxLines="2"
+                android:ellipsize="end" />
 
             <TextView
-                android:id="@+id/tvDetailMeta"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
+                android:id="@+id/tvDetailMeta"
+                android:text=""
+                android:textSize="11sp"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:includeFontPadding="false"
+                android:layout_marginTop="5dp"
+                android:lineSpacingExtra="2dp"
+                android:maxLines="2"
+                android:ellipsize="end" />
         </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:id="@+id/btnDetailRefresh"
+            android:text="同步"
+            android:textSize="13sp"
+            android:textColor="@color/brand"
+            android:includeFontPadding="false"
+            android:layout_marginStart="10dp"
+            android:gravity="center"
+            android:background="@drawable/bg_button_secondary"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="从电脑同步日报"
+            android:minHeight="48dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="14dp"
+            android:minWidth="64dp"
+            android:maxLines="1"
+            android:accessibilityLiveRegion="polite" />
     </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/divider" />
 
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingLeft="16dp"
-        android:paddingRight="16dp"
-        android:scrollbars="none">
+        android:scrollbars="none"
+        android:paddingLeft="20dp"
+        android:paddingRight="20dp">
 
         <LinearLayout
-            android:id="@+id/detailTabs"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal" />
+            android:id="@+id/detailTabs"
+            android:orientation="horizontal"
+            android:gravity="center_vertical" />
     </HorizontalScrollView>
 
     <ScrollView
-        android:id="@+id/detailScroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:id="@+id/detailScroll"
         android:layout_weight="1"
         android:clipToPadding="false"
         android:fillViewport="true"
         android:scrollbars="none">
 
         <LinearLayout
-            android:id="@+id/detailContent"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:id="@+id/detailContent"
             android:orientation="vertical"
-            android:paddingLeft="16dp"
-            android:paddingTop="10dp"
-            android:paddingRight="16dp"
-            android:paddingBottom="28dp" />
+            android:paddingLeft="20dp"
+            android:paddingTop="24dp"
+            android:paddingRight="20dp"
+            android:paddingBottom="36dp" />
     </ScrollView>
 </LinearLayout>

@@ -257,17 +257,13 @@ func (s *Server) reportsIndex(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 500 {
 		limit = 90
 	}
-	// 先过滤空日报再截断，避免连续多天空日报把有内容的历史挤掉。
-	list := s.Reports.List(500)
+	list, next, err := s.Reports.ReadyPage(limit, r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report history cursor"})
+		return
+	}
 	out := make([]map[string]any, 0, limit)
 	for _, rep := range list {
-		if len(out) >= limit {
-			break
-		}
-		// 空日报不推到手机，避免每天多一条“今天没有录音”。
-		if rep.Status != report.StatusDone || rep.JobCount == 0 {
-			continue
-		}
 		out = append(out, map[string]any{
 			"id":               rep.ID,
 			"date":             rep.Date,
@@ -276,9 +272,10 @@ func (s *Server) reportsIndex(w http.ResponseWriter, r *http.Request) {
 			"job_count":        rep.JobCount,
 			"duration_seconds": rep.DurationSeconds,
 			"generated_at":     rep.GeneratedAt,
+			"error":            rep.Error,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"reports": out})
+	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "next_cursor": next, "ack_mode": "single"})
 }
 
 func (s *Server) latestReport(w http.ResponseWriter, r *http.Request) {
@@ -598,11 +595,25 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "reports disabled"})
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-		defer cancel()
-		rep, err := s.ReportScheduler.GenerateNow(ctx)
+		date, err := reportGenerationDate(r.Body)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), report.GenerationTimeout)
+		defer cancel()
+		var rep *report.Report
+		if date == "" {
+			rep, err = s.ReportScheduler.GenerateNow(ctx)
+		} else {
+			rep, err = s.ReportScheduler.GenerateDate(ctx, date)
+		}
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, report.ErrInvalidDate) {
+				status = http.StatusBadRequest
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, rep)
@@ -619,6 +630,43 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+// reportGenerationDate accepts an empty body or one small JSON object. Reject
+// duplicate/unknown fields and trailing data instead of silently choosing a day.
+func reportGenerationDate(body io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(body, 1025))
+	if err != nil || len(data) > 1024 {
+		return "", fmt.Errorf("report request must be at most 1024 bytes")
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", nil
+	}
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	token, err := dec.Token()
+	if err != nil || token != json.Delim('{') {
+		return "", fmt.Errorf("expected a JSON object with an optional date")
+	}
+	var date string
+	seen := false
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil || key != "date" || seen {
+			return "", fmt.Errorf("only one date field is allowed")
+		}
+		var value *string
+		if err := dec.Decode(&value); err != nil || value == nil || *value == "" {
+			return "", fmt.Errorf("date must be a YYYY-MM-DD string")
+		}
+		date, seen = *value, true
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
+		return "", fmt.Errorf("invalid report request JSON")
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return "", fmt.Errorf("unexpected data after report request")
+	}
+	return date, nil
 }
 
 type nearbyDevice struct {
@@ -717,11 +765,7 @@ func (s *Server) createMerge(w http.ResponseWriter, r *http.Request, owner *pair
 
 	// 按录音时间排序，避免前端勾选顺序影响合并结果。
 	sort.SliceStable(jobs, func(i, k int) bool {
-		a, b := jobs[i], jobs[k]
-		if a.RecordedAt > 0 && b.RecordedAt > 0 {
-			return a.RecordedAt < b.RecordedAt
-		}
-		return a.CreatedAt.Before(b.CreatedAt)
+		return jobStart(jobs[i]).Before(jobStart(jobs[k]))
 	})
 
 	sources := make([]merge.Source, 0, len(jobs))
@@ -776,8 +820,8 @@ func (s *Server) createMerge(w http.ResponseWriter, r *http.Request, owner *pair
 	if title == "" {
 		title = mergeTitle(jobs, spans, duration)
 	}
-	recordedAt := jobs[0].RecordedAt
-	if recordedAt == 0 {
+	recordedAt := jobStart(jobs[0]).UnixMilli()
+	if jobs[0].RecordedAt == 0 {
 		recordedAt = jobs[0].CreatedAt.Add(
 			-time.Duration(spans[0].Duration * float64(time.Second))).UnixMilli()
 	}
@@ -934,7 +978,7 @@ func sourceName(j *job.Job) string {
 func mergeTitle(jobs []*job.Job, spans []job.SourceSpan, duration float64) string {
 	start := jobs[0].CreatedAt.Add(-time.Duration(spans[0].Duration * float64(time.Second)))
 	if jobs[0].RecordedAt > 0 {
-		start = time.UnixMilli(jobs[0].RecordedAt)
+		start = jobStart(jobs[0])
 	}
 	// 上传发生在分段关闭时，用最后一段的上传时间当结束时间，
 	// 比 start+音频总时长更接近真实结束（合并会去掉段间空档）。
@@ -950,15 +994,7 @@ func mergeTitle(jobs []*job.Job, spans []job.SourceSpan, duration float64) strin
 }
 
 func jobStart(j *job.Job) time.Time {
-	if j.RecordedAt > 0 {
-		return time.UnixMilli(j.RecordedAt)
-	}
-	// 早期任务没有 recorded_at：上传发生在分段关闭时，
-	// 用 created_at - duration 反推开始时间。
-	if j.Result != nil && j.Result.Duration > 0 {
-		return j.CreatedAt.Add(-time.Duration(j.Result.Duration * float64(time.Second)))
-	}
-	return j.CreatedAt
+	return job.RecordingStart(j)
 }
 
 func (s *Server) jobsRoot(w http.ResponseWriter, r *http.Request) {
@@ -1044,17 +1080,9 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	if max <= 0 {
 		max = 512 << 20
 	}
-	n, copyErr := io.Copy(out, io.LimitReader(file, max+1))
-	closeErr := out.Close()
-	if copyErr != nil || closeErr != nil || n > max {
+	if status, err := saveUpload(out, file, max); err != nil {
 		_ = os.Remove(dst)
-		msg := "upload failed"
-		if copyErr != nil {
-			msg = copyErr.Error()
-		} else if n > max {
-			msg = "file too large"
-		}
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": msg})
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -1109,6 +1137,23 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		"job_id": j.ID,
 		"status": j.Status,
 	})
+}
+
+// Storage failures are retryable. Only the actual size limit may tell the phone
+// to quarantine the file permanently.
+func saveUpload(out io.WriteCloser, in io.Reader, max int64) (int, error) {
+	n, copyErr := io.Copy(out, io.LimitReader(in, max+1))
+	closeErr := out.Close()
+	if copyErr != nil {
+		return http.StatusInternalServerError, copyErr
+	}
+	if closeErr != nil {
+		return http.StatusInternalServerError, closeErr
+	}
+	if n > max {
+		return http.StatusRequestEntityTooLarge, errors.New("file too large")
+	}
+	return http.StatusOK, nil
 }
 
 func (s *Server) jobByID(w http.ResponseWriter, r *http.Request) {

@@ -12,30 +12,15 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="60dp"
+            android:layout_height="72dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingLeft="20dp"
-            android:paddingRight="20dp">
-
-            <FrameLayout
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:background="@drawable/bg_logo">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_mic"
-                    android:tint="@color/white" />
-            </FrameLayout>
+            android:paddingStart="20dp"
+            android:paddingEnd="12dp">
 
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
                 android:layout_weight="1"
                 android:orientation="vertical">
 
@@ -46,35 +31,73 @@
                     android:includeFontPadding="false"
                     android:text="录不停"
                     android:textColor="@color/text_primary"
-                    android:textSize="19sp" />
+                    android:textSize="22sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="1dp"
+                    android:layout_marginTop="4dp"
                     android:includeFontPadding="false"
-                    android:text="打开就录 · 锁屏不断"
+                    android:letterSpacing="0.12"
+                    android:text="REC NONSTOP"
                     android:textColor="@color/text_secondary"
-                    android:textSize="11sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
 
             <TextView
                 android:id="@+id/tvTopStatus"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/bg_chip_gray"
                 android:clickable="true"
                 android:focusable="true"
                 android:foreground="?android:attr/selectableItemBackgroundBorderless"
                 android:gravity="center"
-                android:minWidth="64dp"
-                android:paddingLeft="11dp"
-                android:paddingTop="5dp"
-                android:paddingRight="11dp"
-                android:paddingBottom="5dp"
+                android:minWidth="56dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="待机"
                 android:textColor="@color/text_secondary"
                 android:textSize="11sp" />
+
+            <FrameLayout
+                android:id="@+id/btnHeaderComputer"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_header_action"
+                android:clickable="true"
+                android:contentDescription="电脑同步"
+                android:focusable="true"
+                android:foreground="?android:attr/selectableItemBackgroundBorderless">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_pc"
+                    android:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btnHeaderSettings"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_header_action"
+                android:clickable="true"
+                android:contentDescription="设置"
+                android:focusable="true"
+                android:foreground="?android:attr/selectableItemBackgroundBorderless">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_settings"
+                    android:tint="@color/text_primary" />
+            </FrameLayout>
         </LinearLayout>
 
         <FrameLayout
@@ -117,11 +140,11 @@
         <LinearLayout
             android:id="@+id/bottomNav"
             android:layout_width="match_parent"
-            android:layout_height="66dp"
-            android:background="@color/card"
+            android:layout_height="72dp"
+            android:background="@color/bg"
             android:orientation="horizontal"
-            android:paddingLeft="6dp"
-            android:paddingRight="6dp">
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp">
 
             <LinearLayout
                 android:id="@+id/navRec"
@@ -130,14 +153,15 @@
                 android:layout_weight="1"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
+                android:contentDescription="录音"
                 android:focusable="true"
                 android:gravity="center"
                 android:orientation="vertical">
 
                 <FrameLayout
                     android:id="@+id/navRecBox"
-                    android:layout_width="52dp"
-                    android:layout_height="30dp"
+                    android:layout_width="60dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_nav_item">
 
                     <ImageView
@@ -153,11 +177,12 @@
                     android:id="@+id/navRecLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
                     android:text="录音"
                     android:textColor="@color/nav_label"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -167,14 +192,15 @@
                 android:layout_weight="1"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
+                android:contentDescription="记录"
                 android:focusable="true"
                 android:gravity="center"
                 android:orientation="vertical">
 
                 <FrameLayout
                     android:id="@+id/navFilesBox"
-                    android:layout_width="52dp"
-                    android:layout_height="30dp"
+                    android:layout_width="60dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_nav_item">
 
                     <ImageView
@@ -183,18 +209,19 @@
                         android:layout_height="22dp"
                         android:layout_gravity="center"
                         android:contentDescription="@null"
-                        android:src="@drawable/ic_audio" />
+                        android:src="@drawable/ic_recordings" />
                 </FrameLayout>
 
                 <TextView
                     android:id="@+id/navFilesLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
-                    android:text="文件"
+                    android:text="记录"
                     android:textColor="@color/nav_label"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -204,14 +231,15 @@
                 android:layout_weight="1"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
+                android:contentDescription="日报"
                 android:focusable="true"
                 android:gravity="center"
                 android:orientation="vertical">
 
                 <FrameLayout
                     android:id="@+id/navReportBox"
-                    android:layout_width="52dp"
-                    android:layout_height="30dp"
+                    android:layout_width="60dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_nav_item">
 
                     <ImageView
@@ -227,11 +255,12 @@
                     android:id="@+id/navReportLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
                     android:text="日报"
                     android:textColor="@color/nav_label"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -241,14 +270,16 @@
                 android:layout_weight="1"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
+                android:contentDescription="电脑"
                 android:focusable="true"
                 android:gravity="center"
-                android:orientation="vertical">
+                android:orientation="vertical"
+                android:visibility="gone">
 
                 <FrameLayout
                     android:id="@+id/navPcBox"
-                    android:layout_width="52dp"
-                    android:layout_height="30dp"
+                    android:layout_width="60dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_nav_item">
 
                     <ImageView
@@ -264,11 +295,12 @@
                     android:id="@+id/navPcLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
                     android:text="电脑"
                     android:textColor="@color/nav_label"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -278,14 +310,16 @@
                 android:layout_weight="1"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:clickable="true"
+                android:contentDescription="设置"
                 android:focusable="true"
                 android:gravity="center"
-                android:orientation="vertical">
+                android:orientation="vertical"
+                android:visibility="gone">
 
                 <FrameLayout
                     android:id="@+id/navSettingsBox"
-                    android:layout_width="52dp"
-                    android:layout_height="30dp"
+                    android:layout_width="60dp"
+                    android:layout_height="32dp"
                     android:background="@drawable/bg_nav_item">
 
                     <ImageView
@@ -301,11 +335,12 @@
                     android:id="@+id/navSettingsLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
+                    android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
                     android:text="设置"
                     android:textColor="@color/nav_label"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

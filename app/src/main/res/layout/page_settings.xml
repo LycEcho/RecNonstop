@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/pageSettings"
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:id="@+id/pageSettings"
     android:background="@color/bg"
     android:clipToPadding="false"
     android:fillViewport="true"
@@ -14,78 +15,91 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingLeft="20dp"
-        android:paddingTop="8dp"
+        android:paddingTop="16dp"
         android:paddingRight="20dp"
-        android:paddingBottom="24dp">
+        android:paddingBottom="32dp">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:fontFamily="sans-serif-medium"
-            android:includeFontPadding="false"
             android:text="设置"
+            android:textSize="30sp"
             android:textColor="@color/text_primary"
-            android:textSize="24sp" />
+            android:includeFontPadding="false"
+            android:fontFamily="sans-serif-medium"
+            android:accessibilityHeading="true" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="3dp"
-            android:text="分段时长和录音质量从下一段开始生效"
+            android:text="按你的习惯，让记录更顺手"
+            android:textSize="13sp"
             android:textColor="@color/text_secondary"
-            android:textSize="12sp" />
+            android:includeFontPadding="false"
+            android:layout_marginTop="8dp"
+            android:lineSpacingExtra="3dp" />
 
         <TextView
-            style="@style/SectionHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="20dp"
-            android:layout_marginBottom="8dp"
-            android:text="录音" />
+            android:text="采集与保存"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:includeFontPadding="false"
+            android:fontFamily="sans-serif-medium"
+            android:accessibilityHeading="true"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="12dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_card"
-            android:clipToOutline="true"
-            android:elevation="1dp"
             android:orientation="vertical"
-            android:paddingLeft="16dp"
-            android:paddingRight="16dp">
+            android:background="@drawable/bg_card"
+            android:padding="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:minHeight="62dp"
-                android:orientation="horizontal">
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="@android:color/transparent">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="打开软件自动录音" />
+                        android:text="打开即录音"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="进入 App 后自动开始" />
+                        android:text="进入 App 后自动开始"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <Switch
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
                     android:id="@+id/swAutoStart"
                     style="@style/AppSwitch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:contentDescription="打开即录音"
                     android:layout_marginStart="12dp" />
             </LinearLayout>
 
@@ -95,104 +109,66 @@
                 android:background="@color/divider" />
 
             <LinearLayout
-                android:id="@+id/rowSegment"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="分段时长" />
-
-                    <TextView
-                        android:id="@+id/tvSegmentSub"
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="崩溃最多丢 3 分钟" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvSegmentValue"
-                    style="@style/ValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="3 分钟" />
-
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider" />
-
-            <LinearLayout
                 android:id="@+id/rowQuality"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
+                android:focusable="true">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="录音质量" />
+                        android:text="录音质量"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
                         android:id="@+id/tvQualitySub"
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="16kHz / 32kbps · 约 14 MB/小时" />
+                        android:text="下一段开始生效"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/tvQualityValue"
-                    style="@style/ValueText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="省空间" />
+                    android:id="@+id/tvQualityValue"
+                    android:text="省空间"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
 
                 <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
+                    android:layout_marginStart="8dp" />
             </LinearLayout>
 
             <View
@@ -201,106 +177,199 @@
                 android:background="@color/divider" />
 
             <LinearLayout
-                android:id="@+id/rowKeep"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/rowSegment"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
+                android:focusable="true">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="录音保留" />
+                        android:text="分段时长"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        android:id="@+id/tvKeepSub"
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="自动清理更早的录音" />
+                        android:id="@+id/tvSegmentSub"
+                        android:text="下一段开始生效"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/tvKeepValue"
-                    style="@style/ValueText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="7 天" />
+                    android:id="@+id/tvSegmentValue"
+                    android:text="3 分钟"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
 
                 <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:id="@+id/rowKeep"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="保留时间"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:id="@+id/tvKeepSub"
+                        android:text="到期自动清理旧录音"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:id="@+id/tvKeepValue"
+                    android:text="7 天"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
+                    android:contentDescription="@null"
+                    android:layout_marginStart="8dp" />
             </LinearLayout>
         </LinearLayout>
 
         <TextView
-            style="@style/SectionHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="22dp"
-            android:layout_marginBottom="8dp"
-            android:text="电脑分析" />
+            android:text="整理成日报"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:includeFontPadding="false"
+            android:fontFamily="sans-serif-medium"
+            android:accessibilityHeading="true"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="12dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_card"
-            android:clipToOutline="true"
-            android:elevation="1dp"
             android:orientation="vertical"
-            android:paddingLeft="16dp"
-            android:paddingRight="16dp">
+            android:background="@drawable/bg_card"
+            android:padding="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:minHeight="62dp"
-                android:orientation="horizontal">
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="@android:color/transparent">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="每日日报" />
+                        android:text="每日自动生成"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
                         android:id="@+id/tvReportSettingSub"
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="电脑生成后自动推送到手机" />
+                        android:text="由已连接的电脑生成"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <Switch
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
                     android:id="@+id/swDailyReport"
                     style="@style/AppSwitch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:contentDescription="每日自动生成"
                     android:layout_marginStart="12dp" />
             </LinearLayout>
 
@@ -310,470 +379,520 @@
                 android:background="@color/divider" />
 
             <LinearLayout
-                android:id="@+id/rowReportTime"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/rowReportTime"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
+                android:focusable="true">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="生成时间" />
+                        android:text="生成时间"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="电脑本地时间；中午前生成前一天" />
+                        android:text="使用电脑的本地时间"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <TextView
-                    android:id="@+id/tvReportTimeValue"
-                    style="@style/ValueText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="18:00" />
+                    android:id="@+id/tvReportTimeValue"
+                    android:text="18:00"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
 
                 <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
+                    android:layout_marginStart="8dp" />
             </LinearLayout>
         </LinearLayout>
 
         <TextView
-            style="@style/SectionHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="22dp"
-            android:layout_marginBottom="8dp"
-            android:text="界面" />
+            android:text="后台与屏幕"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:includeFontPadding="false"
+            android:fontFamily="sans-serif-medium"
+            android:accessibilityHeading="true"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="12dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_card"
-            android:clipToOutline="true"
-            android:elevation="1dp"
             android:orientation="vertical"
-            android:paddingLeft="16dp"
-            android:paddingRight="16dp">
+            android:background="@drawable/bg_card"
+            android:padding="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:minHeight="62dp"
-                android:orientation="horizontal">
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="@android:color/transparent">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="自定义界面亮度" />
+                        android:text="自动恢复录音"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="只影响本 App，不影响系统" />
+                        android:text="被系统中断后尝试恢复"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <Switch
-                    android:id="@+id/swBright"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:id="@+id/swWatchdog"
                     style="@style/AppSwitch"
+                    android:contentDescription="自动恢复录音"
+                    android:layout_marginStart="12dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:id="@+id/rowBattery"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="允许后台运行"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="检查电池优化限制"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
+                </LinearLayout>
+
+                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:id="@+id/tvBatteryValue"
+                    android:text="未加入"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
+                    android:contentDescription="@null"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:id="@+id/rowAutostart"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="系统自启动"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="查看手机的后台管理设置"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
+                    android:contentDescription="@null"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:id="@+id/rowTimeout"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="系统息屏时间"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:id="@+id/tvTimeoutValue"
+                    android:text="1 分钟"
+                    android:textSize="13sp"
+                    android:textColor="@color/brand"
+                    android:includeFontPadding="false"
+                    android:layout_marginStart="12dp"
+                    android:maxWidth="104dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:gravity="end" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
+                    android:contentDescription="@null"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
+                android:background="@android:color/transparent">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="单独调节 App 亮度"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="不改变系统亮度"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
+                </LinearLayout>
+
+                <Switch
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:id="@+id/swBright"
+                    style="@style/AppSwitch"
+                    android:contentDescription="单独调节 App 亮度"
                     android:layout_marginStart="12dp" />
             </LinearLayout>
 
             <LinearLayout
-                android:id="@+id/brightnessPanel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
+                android:id="@+id/brightnessPanel"
                 android:orientation="horizontal"
-                android:paddingBottom="10dp">
+                android:gravity="center_vertical"
+                android:paddingBottom="12dp">
 
                 <SeekBar
-                    android:id="@+id/sbBright"
                     android:layout_width="0dp"
-                    android:layout_height="wrap_content"
+                    android:layout_height="48dp"
+                    android:id="@+id/sbBright"
                     android:layout_weight="1"
                     android:max="99"
                     android:progressBackgroundTint="@color/divider"
                     android:progressTint="@color/brand"
-                    android:thumbTint="@color/brand" />
+                    android:thumbTint="@color/brand"
+                    android:contentDescription="App 亮度" />
 
                 <TextView
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
                     android:id="@+id/tvBrightValue"
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:gravity="end"
-                    android:fontFamily="sans-serif-medium"
                     android:text="1%"
+                    android:textSize="13sp"
                     android:textColor="@color/brand"
-                    android:textSize="13sp" />
+                    android:includeFontPadding="false"
+                    android:gravity="end" />
             </LinearLayout>
         </LinearLayout>
 
         <TextView
-            style="@style/SectionHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="22dp"
-            android:layout_marginBottom="8dp"
-            android:text="稳定运行" />
+            android:text="存储与帮助"
+            android:textSize="15sp"
+            android:textColor="@color/text_primary"
+            android:includeFontPadding="false"
+            android:fontFamily="sans-serif-medium"
+            android:accessibilityHeading="true"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="12dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_card"
-            android:clipToOutline="true"
-            android:elevation="1dp"
             android:orientation="vertical"
-            android:paddingLeft="16dp"
-            android:paddingRight="16dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:minHeight="62dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="后台被杀自动拉起" />
-
-                    <TextView
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="精确闹钟每 60 秒检查一次" />
-                </LinearLayout>
-
-                <Switch
-                    android:id="@+id/swWatchdog"
-                    style="@style/AppSwitch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider" />
-
-            <LinearLayout
-                android:id="@+id/rowBattery"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="电池优化白名单" />
-
-                    <TextView
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="关闭后锁屏录音更稳" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvBatteryValue"
-                    style="@style/ValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="未加入"
-                    android:textColor="@color/warning" />
-
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider" />
-
-            <LinearLayout
-                android:id="@+id/rowAutostart"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="自启动 / 后台运行" />
-
-                    <TextView
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="小米、华为等需要单独授权" />
-                </LinearLayout>
-
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider" />
-
-            <LinearLayout
-                android:id="@+id/rowTimeout"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="60dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="系统息屏时间" />
-
-                    <TextView
-                        style="@style/RowSubtitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="点击跳转系统设置" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvTimeoutValue"
-                    style="@style/ValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="1 分钟" />
-
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginStart="2dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <TextView
-            style="@style/SectionHeader"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="22dp"
-            android:layout_marginBottom="8dp"
-            android:text="存储与排查" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
             android:background="@drawable/bg_card"
-            android:clipToOutline="true"
-            android:elevation="1dp"
-            android:orientation="vertical">
+            android:padding="16dp">
 
             <LinearLayout
-                android:id="@+id/rowPath"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/rowPath"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="58dp"
-                android:orientation="horizontal"
-                android:paddingLeft="16dp"
-                android:paddingRight="12dp">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_storage"
-                    android:tint="@color/text_secondary" />
+                android:focusable="true">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="录音保存位置" />
+                        android:text="录音保存位置"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="1dp"
-                        android:text="查看并复制存储路径" />
+                        android:text="查看并复制路径"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
+                    android:layout_marginStart="8dp" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="48dp"
                 android:background="@color/divider" />
 
             <LinearLayout
-                android:id="@+id/rowDiag"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:id="@+id/rowDiag"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:minHeight="76dp"
+                android:paddingTop="14dp"
+                android:paddingBottom="14dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="58dp"
-                android:orientation="horizontal"
-                android:paddingLeft="16dp"
-                android:paddingRight="12dp">
-
-                <ImageView
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:contentDescription="@null"
-                    android:src="@drawable/ic_info"
-                    android:tint="@color/text_secondary" />
+                android:focusable="true">
 
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:layout_weight="1">
 
                     <TextView
-                        style="@style/RowTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="导出诊断日志" />
+                        android:text="导出诊断日志"
+                        android:textSize="15sp"
+                        android:textColor="@color/text_primary"
+                        android:includeFontPadding="false"
+                        android:fontFamily="sans-serif-medium" />
 
                     <TextView
-                        style="@style/RowSubtitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="1dp"
-                        android:text="异常时导出给开发者排查" />
+                        android:text="帮助排查录音异常"
+                        android:textSize="12sp"
+                        android:textColor="@color/text_secondary"
+                        android:includeFontPadding="false"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="2dp" />
                 </LinearLayout>
 
                 <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_chevron"
+                    android:tint="@color/text_tertiary"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_chevron" />
+                    android:layout_marginStart="8dp" />
             </LinearLayout>
         </LinearLayout>
 
         <TextView
-            android:id="@+id/tvVersion"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:gravity="center"
-            android:text="录不停 1.0"
-            android:textColor="@color/text_tertiary"
-            android:textSize="11sp" />
-
+            android:id="@+id/tvVersion"
+            android:text="录不停"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary"
+            android:includeFontPadding="false"
+            android:layout_marginTop="28dp"
+            android:gravity="center" />
     </LinearLayout>
 </ScrollView>

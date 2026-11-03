@@ -108,7 +108,7 @@ curl -X POST http://127.0.0.1:18082/api/v1/admin/pairing
 | POST | `/api/v1/admin/invite` | 电脑主动邀请手机连接（仅本机） |
 | GET | `/api/v1/admin/jobs?limit=&q=` | 本机时间线数据（仅本机，无需 token） |
 | GET | `/api/v1/admin/reports?limit=` | 日报列表（仅本机） |
-| POST | `/api/v1/admin/reports/generate` | 立即生成一份日报（仅本机） |
+| POST | `/api/v1/admin/reports/generate` | 立即生成一份日报，可指定历史日期（仅本机） |
 
 上传示例：
 
@@ -179,14 +179,18 @@ RECNONSTOP_CONFIG=/path/outside/repo/config.json pc/scripts/run-server.sh
 | `storage.audio_keep_days` | 音频保留天数，默认 7；`-1` 不清理 |
 | `storage.job_keep_days` | 任务 JSON 保留天数，默认 30；`-1` 不清理 |
 | `pipeline.mode` | `local` / `remote` |
-| `pipeline.workers` | 并发分析数，CPU 建议 1，GPU 可 2 |
+| `pipeline.workers` | 并发录音任务数，8GB 显存目标建议 1 |
+| `pipeline.inference_concurrency` | 本进程 ASR 与文本服务共享的推理并发，默认 1；每次响应读取结束后释放，健康查询不受阻 |
 | `pipeline.queue` | 队列长度，满了返回 429 让手机退避 |
 | `pipeline.job_timeout_seconds` | 单个任务总超时，默认 1800 |
 | `merge.max_minutes` | 单次合并的音频总时长上限，默认 120 |
 | `merge.max_jobs` | 单次最多合并段数，默认 100 |
 | `merge.ffmpeg` / `merge.ffprobe` | 留空用 PATH 里的 ffmpeg/ffprobe |
 | `worker.url` | Python worker 地址，默认 `http://127.0.0.1:18090` |
-| `lmstudio.json_mode` | 先尝试 `response_format=json_object`，服务端不支持会自动回退 |
+| `lmstudio.model` | 文本服务实际提供的模型 ID；示例 `qwen3.5-4b-q4k` 是服务别名，须与 `/v1/models` 一致，不会自动下载或切换模型 |
+| `lmstudio.max_tokens` | 单次输出上限，示例 4096；开启思考时也包含思考 token，须为输入与输出共同预留上下文 |
+| `lmstudio.reasoning_effort` | 示例 `none`；仅在后端及模型支持时关闭思考，不能仅凭参数值认定已关闭 |
+| `lmstudio.json_mode` | 分段分析和长材料日报提炼先尝试严格 `json_schema`；不支持时在既有两次尝试内回退提示词 JSON，并保留本地校验 |
 | `daily_report.enabled` | 是否开启每日日报，默认 `true` |
 | `daily_report.generate_at` | 生成时间，`HH:MM`，电脑本地时间，默认 `18:00` |
 | `daily_report.title` | 日报标题后缀，默认「录音日报」 |
@@ -197,7 +201,7 @@ RECNONSTOP_CONFIG=/path/outside/repo/config.json pc/scripts/run-server.sh
 
 - **幂等**：同一个 `X-Idempotency-Key` 重复上传返回已有 job，不会重复分析。
 - **重启恢复**：`running` 任务重新入队（最多重跑 2 次），不会永远卡住。
-- **失败保留转写**：ASR 成功、LLM 失败时，`status=failed` 但 `/result` 仍返回 segments 和错误原因。
+- **失败保留转写**：ASR 成功、LLM 失败时，任务仍以 `status=done` 保存转写；摘要留空，分析失败原因写入服务日志。
 - **背压**：队列满返回 429；手机端按 30s/60s/.../30min 退避重试。
 - **磁盘保留**：音频、任务和日报分别按天数清理，避免 24/7 把 PC 盘写满。
 - **本机页面**：只在 `127.0.0.1` 可访问；从手机访问会 403。
@@ -211,8 +215,19 @@ RECNONSTOP_CONFIG=/path/outside/repo/config.json pc/scripts/run-server.sh
 - 手机/电脑离线时保留未推送状态；下次上线会补齐缺失的日报正文，但通知只发最新一份，不会一次弹出十几条历史通知。
 - 手机端「日报」页也会按日期列出本地缓存，进入页面时自动向电脑补齐缺失的历史，离线多天也不会漏掉中间几天。
 - 电脑在生成时间关机，下次启动会补最近一次（例如 18:00 关机、第二天早上启动，补昨天 18:00 的日报）。
-- LLM 不可用时回退为分段摘要，日报仍然生成并推送。
+- 自动与手动日报的总生成时限均为 1 小时；每次模型请求仍使用独立的 `lmstudio.timeout_seconds`（默认 300 秒），请求取消或更早的调用方截止时间仍生效。
+- 日报归并某层未缩短时，对该层原始有界材料块最多定向重试一轮；重试不使用膨胀输出作为证据，仍不收敛则明确失败，不静默截断材料。
+- 长材料分块提炼为每个程序编号的原发言单元填写分类，不能省略中间或末尾编号；只压缩无实质信息的背景，具体信息、转述、观点和方法均保留。严格校验完整编号集合、类别、字段和最多 320 字的背景概括，按原顺序恢复保留项的原文与已有时间、来源。兼容旧 `actual_lines` 响应，但禁止与新格式混用。schema 不受支持时只回退提示词 JSON，总尝试最多两次；非法响应明确失败。分类不证明内容真实性。
+- 模型请求失败、归并仍不收敛、输出超限或总时限耗尽时，日报正文与摘要提示汇总未完成，保留分段材料并继续生成和推送；不把汇总未完成一概判断为模型离线。
+- 有原始转写的录音只向日报模型提供完整原文，不附旧摘要及旧待办、风险候选；缺少原文时才携带明确标注的自动分析参考。回退正文和详情同样优先原文、排除旧推断，仅在缺少原文时展示需核实的自动分析候选；原记录保持不变。
+- 报告读取在锁内取得完整快照，详情数据复制后返回，避免并发更新竞态或共享详情缓冲区相互影响。
+- 日报提示词要求只压缩无具体事实的背景和重复措辞，保留不同事实、决定、数字、时间、责任人、期限以及否定、条件和风险依据；实际内容仍需结合原文核对。
+- 段数与时长由任务数据计算；仍有录音排队时，正文和摘要明确显示尚未纳入的数量。来源未确认的背景、引用或抒情内容不推断为录音者本人的经历或心理风险。
+- 分段分析把发言来源 `speaker` 与任务负责人 `owner` 分开；来源仅接受原转写标识，不能把正文提到的人名当成新增说话人。正常前提和禁止事项保存在 `constraints`，与有依据的风险分开，合并时保留各段提取结果。
+- 日期校验同时核对年份和完整年月日，不以报告年份补全其他事项的月日；声音提示只关联重叠的原发言时段，不能作为新增事实的依据。
+- 无法确认身份的说话人编号只在当前录音内有效，不按相同编号跨段合并人物。时间线和待办保留对应录音时间，便于回看依据。
 - 手动生成：`curl -X POST http://127.0.0.1:18082/api/v1/admin/reports/generate`。
+- 重新生成指定日期：`curl -X POST http://127.0.0.1:18082/api/v1/admin/reports/generate -H 'Content-Type: application/json' -d '{"date":"2001-02-03"}'`（日期为合成示例）。按服务器本地时区选取该日 00:00 至次日 00:00 之前的录音；指定今天则截止请求时刻。每次新建一份日报，保留原版本，不修改定时设置。未来日期、非法日期、显式空日期或非法 JSON 返回 `400`；请求体最多 1024 字节。空请求体或 `{}` 沿用原手动生成区间。接口仍仅允许本机访问，生成与排队等待遵守请求取消及原有总时限。
 
 ## 模型
 
@@ -239,12 +254,27 @@ QWEN3_ASR_URL=http://127.0.0.1:18091 pc/scripts/run-worker.sh
 ```
 
 - worker 只用 ffmpeg 解码音频，然后调用 llama-server，不在本地加载模型
-- `/health` 的 `ready=true` 表示 worker 能访问 llama-server
+- `/health` 的 `ready=true` 表示 worker 启动预热时已成功访问 llama-server；不代表持续探测其可达性
 - Qwen3-ASR 自带标点，支持中文/粤语/英语等
 - 说话人目前统一为 `spk_0`；需要区分说话人要另配 diarization
-- 3 分钟以内建议 `-c 4096`；更长音频要加大 context 或先分段
+- worker 将长音频分成最多 30 秒的块，优先在低音量位置切割；模型输出达到长度限制时自动缩短重试，避免静默丢失后半段
+- 返回的时间戳对应识别音频块，并非逐字或逐句精确对齐；说话人分离仍需单独配置
+- 精确数字静音不会送入识别模型；微弱语音仍保留识别
 
 摘要模型只负责摘要分析，不参与转写校对。
+
+### 8 GB 显存目标配置
+
+以 RTX 3060、8 GB 显存为部署预算，不要求开发或测试机器使用相同显卡。ASR 保留上述 Q8 解码器与 bf16 音频编码器；文本分析可评估 Qwen3.5-4B Q4_K_M，既有 Qwen3-4B-Instruct-2507 Q4_K_M 也可作为对照。Qwen3.5 的 GGUF 如采用 Unsloth 等发布者版本，应记录发布者、固定 revision 和文件 SHA256；第三方量化不等于 Qwen 官方发布的 GGUF。纯文本分析不需要视觉 `mmproj`。
+
+- ASR 上下文 4096，文本上下文 8192、单次输出上限 4096；实际输入 token 与输出预算合计须能放入窗口。服务分别限制 `--parallel 1`，PC pipeline 保持一个 worker。
+- `pipeline.inference_concurrency` 保持 1，让新录音 ASR 与独立运行的日报逐个发起推理请求，避免两个服务同时计算；这不会卸载常驻模型，也不限制绕过 PC 的其他客户端。
+- 文本服务使用 `--batch-size 256 --ubatch-size 128 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0`，须确认安装的 llama.cpp 版本与后端支持。
+- 首轮可使用非思考模式对比；支持这些参数的 llama.cpp 可设置 `--jinja --reasoning-format auto --reasoning-budget 0 --chat-template-kwargs '{"enable_thinking":false}'`，并检查返回内容。请求级参数可能覆盖启动参数，不能只检查启动命令。
+- 长转写和日报依靠分块、逐层汇总控制上下文；不为放入窗口而丢弃最后一段待办。
+- 可选音频事件分析优先放在 CPU，给转写和摘要保留显存。
+
+这些是候选配置，仍需按固定录音参考验证事实覆盖、责任归属、否定与条件。当前尚无 RTX 3060 8 GB 的完整显存峰值和吞吐实测；Linux CPU 或其他硬件上的运行结果不能替代目标显卡验收。部署时须验证两个模型同时驻留、最长输入推理以及系统占用下的显存峰值，不能只把权重文件大小相加。
 
 ## Windows
 
@@ -263,6 +293,12 @@ Windows 运行 `pc/scripts/run-server.bat` 前必须设置 `RECNONSTOP_CONFIG`�
 ```bash
 cd pc
 go test ./...
+```
+
+worker 的合成音频回归测试（不加载模型、不需要真实录音）：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 "$RECNONSTOP_PYTHON" -m unittest discover -s pc/worker -p 'test_*.py'
 ```
 
 覆盖：任务落盘/幂等/重启恢复/保留清理、配对持久化、JSON 漂移、上传头校验、分析失败保留转写、多段合并与来源偏移。

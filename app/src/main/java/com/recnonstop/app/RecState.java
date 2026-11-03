@@ -5,6 +5,8 @@ public class RecState {
     public static volatile boolean running = false;
     public static volatile boolean paused = false;
     public static volatile boolean lowLevel = false;
+    public static volatile float levelDb = -90f;
+    public static volatile long levelSampleMs = 0L;
     public static volatile String currentFile = "";
     public static volatile long segmentStartMs = 0L;
     public static volatile long recordStartMs = 0L;

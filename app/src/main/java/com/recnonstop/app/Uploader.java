@@ -24,8 +24,11 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.ParsePosition;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -47,6 +50,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class Uploader {
 
     private static final String TAG = "RecNonstopUpload";
+    private static final int MAX_JSON_BYTES = 8 * 1024 * 1024;
+
+    static final class HttpError extends IOException {
+        final int code;
+
+        HttpError(int code, String body) {
+            super("HTTP " + code + ": " + body);
+            this.code = code;
+        }
+    }
 
     private static final ExecutorService UPLOAD_EXEC = Executors.newSingleThreadExecutor();
     private static final ExecutorService SCAN_EXEC = Executors.newSingleThreadExecutor();
@@ -176,7 +189,7 @@ public final class Uploader {
         int enqueued = 0;
         for (File f : files) {
             String name = f.getName();
-            if (f.length() < 1024 || uploaded.contains(name)) {
+            if (uploaded.contains(name) || !isUploadable(f)) {
                 continue;
             }
             if (!notUploaded.contains(name)) {
@@ -204,13 +217,10 @@ public final class Uploader {
 
     public static void enqueue(Context ctx, File f) {
         Context app = ctx.getApplicationContext();
-        if (f == null || !f.exists() || f.length() < 1024) {
+        if (!isUploadable(f)) {
             return;
         }
         String name = f.getName();
-        if (!name.endsWith(".aac") && !name.endsWith(".m4a") && !name.endsWith(".part")) {
-            return;
-        }
         if (!Settings.getBool(app, Settings.KEY_UPLOAD, false)) {
             return;
         }
@@ -260,6 +270,8 @@ public final class Uploader {
     // ---------------- 上传 ----------------
 
     private static void uploadOne(Context ctx, File f) {
+        // 排队后用户可能已关闭上传；执行时再次检查，避免继续发送积压录音。
+        if (!Settings.getBool(ctx, Settings.KEY_UPLOAD, false)) return;
         String base = Settings.getPcUrl(ctx);
         if (base.isEmpty()) {
             RecState.uploadStatus = "未设置电脑地址";
@@ -278,6 +290,9 @@ public final class Uploader {
             RecState.uploadStatus = "上传中：" + name;
             String resp = postFile(ctx, base + "/api/v1/jobs", f, key);
             String jobId = new JSONObject(resp).optString("job_id", "");
+            if (jobId.isEmpty()) {
+                throw new IOException("电脑未确认接收任务，请稍后重试");
+            }
 
             store.markUploaded(name, jobId);
             Health.uploadOk(ctx, name);
@@ -285,16 +300,15 @@ public final class Uploader {
             RecState.pendingCount = Math.max(0, RecState.pendingCount - 1);
             Diag.log(ctx, TAG, "uploaded " + name + " job=" + jobId);
 
-            if (jobId.isEmpty()) {
-                RecState.uploadStatus = "已上传：" + name;
-                return;
-            }
             RecState.lastJobId = jobId;
             RecState.uploadStatus = "已上传，分析中：" + name;
             pollAsync(ctx, base, jobId, name);
         } catch (Exception e) {
-            store.markFailed(name, e.getMessage());
-            RecState.uploadStatus = "上传失败，稍后重试：" + name + " · " + e.getMessage();
+            int code = e instanceof HttpError ? ((HttpError) e).code : 0;
+            boolean permanent = code == 400 || code == 413 || code == 415;
+            store.markFailed(name, e.getMessage(), permanent);
+            RecState.uploadStatus = (permanent ? "文件无法上传：" : "上传失败，稍后重试：")
+                    + name + " · " + e.getMessage();
             Diag.error(ctx, TAG, "upload failed " + name, e);
         }
     }
@@ -334,7 +348,10 @@ public final class Uploader {
                         if (summary.isEmpty()) {
                             summary = r.optString("error", "");
                         }
-                    } catch (Exception e) {
+                    } catch (HttpError e) {
+                        // 失败任务可能从未产生结果；其他错误（断网、5xx、解析失败）
+                        // 必须继续重试，不能把占位文本当成永久摘要存下来。
+                        if (e.code != 409 || !"failed".equals(status)) throw e;
                         summary = o.optString("error", "");
                     }
                     if (summary.isEmpty()) {
@@ -350,8 +367,7 @@ public final class Uploader {
                 }
                 RecState.uploadStatus = "分析中：" + name + " (" + status + ")";
             } catch (Exception e) {
-                String msg = e.getMessage() == null ? "" : e.getMessage();
-                if (msg.contains("HTTP 404")) {
+                if (e instanceof HttpError && ((HttpError) e).code == 404) {
                     // PC 端任务被清掉了：标记失败，下一轮扫描会重新上传。
                     UploadStore.get(ctx).markFailed(name, "job not found on PC");
                     RecState.uploadStatus = "电脑端任务丢失，稍后重传：" + name;
@@ -394,37 +410,35 @@ public final class Uploader {
     static JSONObject apiPost(Context ctx, String path, JSONObject body) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(
                 Settings.getPcUrl(ctx) + path).openConnection();
-        c.setConnectTimeout(10000);
-        c.setReadTimeout(30000);
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        addAuth(ctx, c);
-        try (OutputStream out = c.getOutputStream()) {
-            out.write((body == null ? "{}" : body.toString())
-                    .getBytes(StandardCharsets.UTF_8));
-        }
-        int code = c.getResponseCode();
-        InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
-        String text = readAll(in, 64 * 1024);
-        if (code == 401) {
-            throw new IOException("未连接或连接已失效");
-        }
-        if (code < 200 || code >= 300) {
-            throw new IOException("HTTP " + code + ": " + text);
-        }
-        if (text.isEmpty()) {
-            return new JSONObject();
-        }
         try {
-            return new JSONObject(text);
-        } catch (org.json.JSONException e) {
-            throw new IOException("电脑返回了无法解析的数据", e);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(30000);
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            addAuth(ctx, c);
+            try (OutputStream out = c.getOutputStream()) {
+                out.write((body == null ? "{}" : body.toString())
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            String text = readResponse(c);
+            if (text.isEmpty()) {
+                return new JSONObject();
+            }
+            try {
+                return new JSONObject(text);
+            } catch (org.json.JSONException e) {
+                throw new IOException("电脑返回了无法解析的数据", e);
+            }
+        } finally {
+            c.disconnect();
         }
     }
 
     /** 补轮询：上传成功但摘要为空的任务（PC 重启/超时）。 */
-    private static void pollOutstanding(Context app) {        String token = Settings.getString(app, Settings.KEY_TOKEN, "");
+    private static void pollOutstanding(Context app) {
+        if (!Settings.getBool(app, Settings.KEY_UPLOAD, false)) return;
+        String token = Settings.getString(app, Settings.KEY_TOKEN, "");
         if (token == null || token.isEmpty()) {
             return;
         }
@@ -438,46 +452,34 @@ public final class Uploader {
             throws IOException {
         String boundary = "----RecNonstop" + System.currentTimeMillis();
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(60000);
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setChunkedStreamingMode(8192);
-        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        c.setRequestProperty("X-Idempotency-Key", idemKey);
-        addAuth(ctx, c);
+        try {
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(60000);
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setChunkedStreamingMode(8192);
+            c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            c.setRequestProperty("X-Idempotency-Key", idemKey);
+            addAuth(ctx, c);
 
-        try (OutputStream raw = new BufferedOutputStream(c.getOutputStream())) {
-            writeField(raw, boundary, "device", Settings.deviceName(ctx));
-            writeField(raw, boundary, "device_id",
-                    Settings.getString(ctx, Settings.KEY_DEVICE_ID, ""));
-            writeField(raw, boundary, "recorded_at", String.valueOf(f.lastModified()));
-            writeField(raw, boundary, "segment_name", uploadName(f));
-            String gaps = gapsForSegment(ctx, f);
-            if (!gaps.isEmpty()) {
-                writeField(raw, boundary, "gaps", gaps);
+            try (OutputStream raw = new BufferedOutputStream(c.getOutputStream())) {
+                writeField(raw, boundary, "device", Settings.deviceName(ctx));
+                writeField(raw, boundary, "device_id",
+                        Settings.getString(ctx, Settings.KEY_DEVICE_ID, ""));
+                writeField(raw, boundary, "recorded_at", String.valueOf(recordedAt(f)));
+                writeField(raw, boundary, "segment_name", uploadName(f));
+                String gaps = gapsForSegment(ctx, f);
+                if (!gaps.isEmpty()) {
+                    writeField(raw, boundary, "gaps", gaps);
+                }
+                writeFile(raw, boundary, "file", f);
+                raw.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
             }
-            writeFile(raw, boundary, "file", f);
-            raw.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-        }
 
-        int code = c.getResponseCode();
-        InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
-        String body = readAll(in, 64 * 1024);
-        if (code == 401) {
-            throw new IOException("未连接或连接已失效");
+            return readResponse(c);
+        } finally {
+            c.disconnect();
         }
-        if (code == 409) {
-            // 服务端已有同一段，按成功处理。
-            return body;
-        }
-        if (code == 429) {
-            throw new IOException("电脑端队列已满，稍后重试");
-        }
-        if (code < 200 || code >= 300) {
-            throw new IOException("HTTP " + code + ": " + body);
-        }
-        return body;
     }
 
     private static void writeField(OutputStream os, String boundary, String name, String value)
@@ -508,10 +510,29 @@ public final class Uploader {
     }
 
     private static String uploadName(File f) {
+        return f.getName();
+    }
+
+    private static boolean isUploadable(File f) {
+        if (f == null || !f.isFile()) return false;
         String name = f.getName();
-        return name.endsWith(".part")
-                ? name.substring(0, name.length() - 5) + ".aac"
-                : name;
+        if (name.endsWith(".aac")) return Adts.isValid(f);
+        return name.endsWith(".m4a") && f.length() >= 1024;
+    }
+
+    /** 文件修改时间是段结束时间；标准文件名保存的是实际开始时间。 */
+    private static long recordedAt(File f) {
+        String name = f.getName();
+        if (name.matches("rec_[0-9]{8}_[0-9]{6}(_[0-9]{3})?\\.(aac|m4a)")) {
+            String stamp = name.substring(4, name.lastIndexOf('.'));
+            String pattern = stamp.length() == 19 ? "yyyyMMdd_HHmmss_SSS" : "yyyyMMdd_HHmmss";
+            SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.US);
+            format.setLenient(false);
+            ParsePosition pos = new ParsePosition(0);
+            Date parsed = format.parse(stamp, pos);
+            if (parsed != null && pos.getIndex() == stamp.length()) return parsed.getTime();
+        }
+        return f.lastModified();
     }
 
     private static String gapsForSegment(Context ctx, File f) {
@@ -519,8 +540,8 @@ public final class Uploader {
         if (!gaps.exists()) {
             return "";
         }
-        long from = f.lastModified() - 2000L;
-        long to = f.lastModified() + Settings.segmentMs(ctx) + 120_000L;
+        long from = recordedAt(f) - 2000L;
+        long to = f.lastModified() + 2000L;
         JSONArray arr = new JSONArray();
         try (InputStream raw = new FileInputStream(gaps)) {
             // gaps.jsonl 跑一年可能到 MB 级；只读尾部 256KB，避免每段上传都全量扫。
@@ -553,17 +574,28 @@ public final class Uploader {
 
     private static String get(Context ctx, String urlStr) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(10000);
-        c.setReadTimeout(30000);
-        addAuth(ctx, c);
+        try {
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(30000);
+            addAuth(ctx, c);
+            return readResponse(c);
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private static String readResponse(HttpURLConnection c) throws IOException {
         int code = c.getResponseCode();
         InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
-        String body = readAll(in, 64 * 1024);
+        String body = readAll(in, MAX_JSON_BYTES);
         if (code == 401) {
-            throw new IOException("未连接或连接已失效");
+            throw new HttpError(code, "未连接或连接已失效");
+        }
+        if (code == 429) {
+            throw new HttpError(code, "电脑端队列已满，稍后重试");
         }
         if (code < 200 || code >= 300) {
-            throw new IOException("HTTP " + code + ": " + body);
+            throw new HttpError(code, body);
         }
         return body;
     }
@@ -582,12 +614,9 @@ public final class Uploader {
             int n;
             int total = 0;
             while ((n = i.read(buf)) > 0) {
-                int take = Math.min(n, max - total);
-                if (take > 0) {
-                    out.write(buf, 0, take);
-                    total += take;
-                }
-                if (total >= max) break;
+                if (n > max - total) throw new IOException("电脑返回的数据过大");
+                out.write(buf, 0, n);
+                total += n;
             }
             return out.toString("UTF-8");
         }

@@ -19,10 +19,11 @@ type Config struct {
 	} `json:"storage"`
 
 	Pipeline struct {
-		Mode              string `json:"mode"` // local | remote | hybrid
-		Workers           int    `json:"workers"`
-		Queue             int    `json:"queue"`
-		JobTimeoutSeconds int    `json:"job_timeout_seconds"`
+		Mode                 string `json:"mode"` // local | remote | hybrid
+		Workers              int    `json:"workers"`
+		Queue                int    `json:"queue"`
+		JobTimeoutSeconds    int    `json:"job_timeout_seconds"`
+		InferenceConcurrency int    `json:"inference_concurrency"` // <=0: 1 shared ASR/text request; increase only for independent compute capacity.
 	} `json:"pipeline"`
 
 	Merge struct {

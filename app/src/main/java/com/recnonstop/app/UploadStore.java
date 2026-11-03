@@ -22,7 +22,7 @@ import java.util.Set;
 public final class UploadStore extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "upload.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     private static final Object LOCK = new Object();
     private static UploadStore instance;
@@ -57,7 +57,11 @@ public final class UploadStore extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // v1 是初始版本，后续在这里做迁移。
+        if (oldVersion < 2) {
+            // v1 会把长期离线也当成坏文件隔离；升级后再尝试一次，
+            // 明确无效的文件会由服务端重新拒收并隔离。
+            db.execSQL("UPDATE files SET state='failed', next_retry_at=0 WHERE state='quarantine'");
+        }
     }
 
     /** 把旧版 SharedPreferences 里的已上传集合搬进 SQLite，只跑一次。 */
@@ -121,13 +125,17 @@ public final class UploadStore extends SQLiteOpenHelper {
 
     /**
      * 失败退避：30s, 60s, 120s ... 最多 30 分钟。
-     * 连续失败 10 次进入 quarantine，避免一个坏文件永远堵在队头。
+     * 网络故障持续退避重试；只有服务端明确拒收的坏文件进入 quarantine。
      */
     public void markFailed(String name, String error) {
-        int n = attempts(name) + 1;
-        long delay = Math.min(30L * 60_000L, 30_000L * (1L << Math.min(n, 6)));
+        markFailed(name, error, false);
+    }
+
+    public void markFailed(String name, String error, boolean permanent) {
+        int n = Math.min(attempts(name), 30) + 1;
+        long delay = Math.min(30L * 60_000L, 30_000L * (1L << Math.min(n - 1, 6)));
         ContentValues v = new ContentValues();
-        v.put("state", n >= 10 ? "quarantine" : "failed");
+        v.put("state", permanent ? "quarantine" : "failed");
         v.put("attempts", n);
         v.put("next_retry_at", System.currentTimeMillis() + delay);
         v.put("error", error == null ? "" : error);

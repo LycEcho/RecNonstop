@@ -1,6 +1,7 @@
 package com.recnonstop.app;
 
 import android.content.Context;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -86,10 +87,7 @@ public final class DailyReports {
             tmp.delete();
             return false;
         }
-        if (target.exists() && !target.delete()) {
-            tmp.delete();
-            return false;
-        }
+        // Android 的同目录 rename 会原子替换；先删旧文件会在崩溃时丢失缓存。
         if (!tmp.renameTo(target)) {
             tmp.delete();
             return false;
@@ -106,6 +104,11 @@ public final class DailyReports {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    static boolean summaryIncomplete(JSONObject report) {
+        return report != null && (!report.optString("error", "").trim().isEmpty()
+                || "failed".equals(report.optString("status", "")));
     }
 
     static List<JSONObject> list(Context c) {
@@ -196,36 +199,56 @@ public final class DailyReports {
     }
 
     /**
-     * 把电脑上的日报历史补齐到本地：先取元数据列表，再逐份下载本地没有的。
+     * 按电脑返回的游标遍历日报历史，再逐份下载本地没有的。
      * 通知只发最新一份，避免离线多日后一次弹很多条。
-     * 必须先把历史补齐再 ack：电脑的 ack 会把更早的日报一起标记为已送达。
+     * 新协议只确认已落盘的单份报告；旧协议会连带确认更早历史，因此不发送 ack。
      */
     private static int syncFromServer(Context c, boolean notifyNewest) throws Exception {
-        JSONArray arr;
-        try {
-            JSONObject resp = Uploader.apiGet(c, "/api/v1/reports?limit=90");
-            arr = resp.optJSONArray("reports");
-        } catch (IOException ignored) {
-            // 兼容旧版电脑端：没有历史列表接口时退回只同步最新一份。
-            return syncLatestOnly(c, notifyNewest);
-        }
-        if (arr == null || arr.length() == 0) return 0;
-
         String newestId = "";
         int downloaded = 0;
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject meta = arr.optJSONObject(i);
-            if (meta == null) continue;
-            String id = meta.optString("id", "");
-            if (!validId(id)) continue;
-            if (newestId.isEmpty()) newestId = id;
-            if (get(c, id) != null) continue;
-            JSONObject full = Uploader.apiGet(c, "/api/v1/reports/" + id);
-            if (!save(c, full)) {
-                throw new IOException("save report failed: " + id);
+        String cursor = "";
+        Set<String> seenCursors = new HashSet<>();
+        seenCursors.add(cursor);
+        Set<String> syncedIds = new HashSet<>();
+        do {
+            JSONObject resp;
+            try {
+                String path = "/api/v1/reports?limit=90";
+                if (!cursor.isEmpty()) path += "&cursor=" + Uri.encode(cursor);
+                resp = Uploader.apiGet(c, path);
+            } catch (Uploader.HttpError e) {
+                // 只有首页 404 表示旧版没有历史接口；后续页失败必须报告同步未完成。
+                if (e.code != 404 || !cursor.isEmpty()) throw e;
+                return syncLatestOnly(c, notifyNewest);
             }
-            downloaded++;
-        }
+            JSONArray arr = resp.optJSONArray("reports");
+            if (arr == null) throw new IOException("日报历史响应缺少列表");
+            boolean singleAck = "single".equals(resp.optString("ack_mode", ""));
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject meta = arr.optJSONObject(i);
+                String id = meta == null ? "" : meta.optString("id", "");
+                if (!validId(id)) throw new IOException("日报历史包含无效标识");
+                if (newestId.isEmpty()) newestId = id;
+                if (!syncedIds.add(id)) continue;
+                if (get(c, id) == null) {
+                    JSONObject full = Uploader.apiGet(c, "/api/v1/reports/" + id);
+                    if (!id.equals(full.optString("id", ""))) {
+                        throw new IOException("日报下载标识不匹配");
+                    }
+                    if (!save(c, full)) throw new IOException("save report failed: " + id);
+                    downloaded++;
+                }
+                // Also ack cached reports: an earlier attempt may have saved the
+                // file successfully but lost the acknowledgement to a network error.
+                if (singleAck) {
+                    Uploader.apiPost(c, "/api/v1/reports/" + id + "/ack", new JSONObject());
+                }
+            }
+            cursor = resp.optString("next_cursor", "");
+            if (!cursor.isEmpty() && !seenCursors.add(cursor)) {
+                throw new IOException("日报历史游标重复，请稍后重试同步");
+            }
+        } while (!cursor.isEmpty());
 
         if (notifyNewest && !newestId.isEmpty()
                 && !notifiedSet(c).contains(newestId)) {
@@ -234,9 +257,6 @@ public final class DailyReports {
         }
         if (downloaded > 0) Diag.log(c, TAG, "reports synced: " + downloaded);
 
-        if (!newestId.isEmpty()) {
-            Uploader.apiPost(c, "/api/v1/reports/" + newestId + "/ack", new JSONObject());
-        }
         return downloaded;
     }
 
@@ -251,7 +271,8 @@ public final class DailyReports {
             downloaded = 1;
         }
         if (notifyNewest && !notifiedSet(c).contains(id)) notifyReport(c, id, full);
-        Uploader.apiPost(c, "/api/v1/reports/" + id + "/ack", new JSONObject());
+        // This fallback is an old server without a history/capability response.
+        // Its acknowledgement may include undownloaded reports, so leave it pending.
         return downloaded;
     }
 
@@ -263,7 +284,7 @@ public final class DailyReports {
         markNotified(c, id);
     }
 
-    /** 日报页刷新：补齐电脑上的全部历史，不只是最新一份。 */
+    /** 同步电脑端已有日报；不会触发重新生成。旧版电脑只能提供其列表范围。 */
     static void syncHistory(Context c, ReportCallback cb) {
         EXEC.execute(() -> {
             String msg = "";
@@ -274,11 +295,11 @@ public final class DailyReports {
                 if (n > 0) {
                     msg = "已同步 " + n + " 份日报";
                 } else {
-                    msg = list(c).isEmpty() ? "电脑上还没有日报" : "已是最新";
+                    msg = list(c).isEmpty() ? "电脑上还没有可同步的日报" : "同步完成，没有新增日报";
                 }
             } catch (Exception e) {
-                String m = e.getMessage() == null ? "" : e.getMessage();
-                msg = m.contains("404") ? "电脑上还没有日报" : "读取日报失败：" + m;
+                Diag.error(c, TAG, "report history sync incomplete", e);
+                msg = "同步未完成，已保存的日报仍可阅读；请稍后重试";
             }
             final boolean fok = ok;
             final String fmsg = msg;

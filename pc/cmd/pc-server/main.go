@@ -58,6 +58,9 @@ func main() {
 	if cfg.Pipeline.Workers <= 0 {
 		cfg.Pipeline.Workers = 1
 	}
+	if cfg.Pipeline.InferenceConcurrency <= 0 {
+		cfg.Pipeline.InferenceConcurrency = 1
+	}
 	if cfg.Pipeline.Queue <= 0 {
 		cfg.Pipeline.Queue = 100
 	}
@@ -147,17 +150,24 @@ func main() {
 		log.Fatalf("create job store: %v", err)
 	}
 
+	// The report scheduler runs independently of pipeline workers. Share one
+	// request gate so an ASR job and a report do not compute concurrently by
+	// default, even when their services use different ports on the same GPU.
+	inferenceGate := infer.NewInferenceGate(cfg.Pipeline.InferenceConcurrency)
 	var asr infer.ASR
 	var workerASR *infer.WorkerASR
 	asrLabel := "local:worker"
 	if cfg.Pipeline.Mode == "remote" && cfg.RemoteASR.BaseURL != "" {
-		asr = infer.NewRemoteASR(cfg.RemoteASR.BaseURL, cfg.RemoteASR.APIKey, cfg.RemoteASR.Model)
+		ra := infer.NewRemoteASR(cfg.RemoteASR.BaseURL, cfg.RemoteASR.APIKey, cfg.RemoteASR.Model)
+		ra.HC.Transport = inferenceGate.Transport(ra.HC.Transport)
+		asr = ra
 		asrLabel = "remote:" + cfg.RemoteASR.Model
 	} else {
 		wa := infer.NewWorkerASR(cfg.Worker.URL)
 		if cfg.Worker.TimeoutSeconds > 0 {
 			wa.HC.Timeout = time.Duration(cfg.Worker.TimeoutSeconds) * time.Second
 		}
+		wa.HC.Transport = inferenceGate.Transport(wa.HC.Transport)
 		asr = wa
 		workerASR = wa
 	}
@@ -172,6 +182,7 @@ func main() {
 		time.Duration(cfg.LMStudio.TimeoutSeconds)*time.Second,
 		cfg.LMStudio.JSONMode,
 	)
+	analyzer.HC.Transport = inferenceGate.Transport(analyzer.HC.Transport)
 
 	hostBase := strings.TrimRight(cfg.HostManager.BaseURL, "/")
 	if hostBase != "" {
@@ -252,8 +263,8 @@ func main() {
 		p.Close()
 	}()
 
-	log.Printf("warehouse-audio listening on %s (mode=%s, asr=%s, workers=%d, queue=%d)",
-		cfg.Server.Addr, cfg.Pipeline.Mode, asrLabel, cfg.Pipeline.Workers, cfg.Pipeline.Queue)
+	log.Printf("warehouse-audio listening on %s (mode=%s, asr=%s, workers=%d, queue=%d, inference_concurrency=%d)",
+		cfg.Server.Addr, cfg.Pipeline.Mode, asrLabel, cfg.Pipeline.Workers, cfg.Pipeline.Queue, cfg.Pipeline.InferenceConcurrency)
 	log.Printf("local admin: http://127.0.0.1:%d/api/v1/admin/jobs", servicePort)
 
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

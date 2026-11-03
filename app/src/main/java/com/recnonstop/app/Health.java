@@ -167,11 +167,10 @@ public final class Health {
 
     public static boolean isStale(Context c, long thresholdMs) {
         JSONObject o = read(c);
-        long last = o.optLong("last_segment_at", 0L);
-        if (last <= 0L) {
-            return o.optLong("service_started_at", 0L) > 0L;
-        }
-        return System.currentTimeMillis() - last > thresholdMs;
+        // 新会话尚未关闭第一段时，从本次启动计时，不能立刻判定心跳过期。
+        long last = Math.max(o.optLong("last_segment_at", 0L),
+                o.optLong("service_started_at", 0L));
+        return last > 0L && System.currentTimeMillis() - last > thresholdMs;
     }
 
     private static JSONObject load(Context c) {

@@ -3,21 +3,31 @@ package report
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"warehouse-audio/internal/infer"
 	"warehouse-audio/internal/job"
 )
 
 type Reporter interface {
 	GenerateDailyReport(ctx context.Context, material string) (string, error)
 }
+
+// GenerationTimeout bounds a complete report, including all chunk summaries.
+// Individual model requests retain their separately configured timeout.
+const GenerationTimeout = time.Hour
+
+// ErrInvalidDate marks an invalid or future date supplied by a manual caller.
+var ErrInvalidDate = errors.New("invalid report date")
 
 // Settings 是运行时可改的日报开关和生成时间。
 // config.json 提供默认值，手机 App 修改后写到 storage.dir/report_settings.json。
@@ -44,7 +54,7 @@ type Scheduler struct {
 	settings Settings
 	running  bool
 
-	genMu sync.Mutex
+	genMu chan struct{}
 	now   func() time.Time
 }
 
@@ -63,6 +73,7 @@ func NewScheduler(store *Store, jobs *job.Store, reporter Reporter, settingsPath
 		settingsPath: settingsPath,
 		title:        title,
 		settings:     settings,
+		genMu:        make(chan struct{}, 1),
 		now:          time.Now,
 	}
 }
@@ -123,8 +134,8 @@ func (s *Scheduler) tick(ctx context.Context) {
 		return
 	}
 	go func() {
-		// 模型挂了不能把定时器卡住：超时后生成确定性回退日报。
-		genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		// 给全天材料的多轮汇总预留时间；总超时后保留分段材料。
+		genCtx, cancel := context.WithTimeout(ctx, GenerationTimeout)
 		defer cancel()
 		if _, err := s.generate(genCtx, date, start, end, force); err != nil {
 			log.Printf("report: generate %s: %v", date, err)
@@ -154,9 +165,36 @@ func (s *Scheduler) GenerateNow(ctx context.Context) (*Report, error) {
 	return s.generate(ctx, date, start, end, true)
 }
 
+// GenerateDate creates another report for a local calendar day, preserving all
+// existing versions. Historical days cover the full day; today stops at now.
+func (s *Scheduler) GenerateDate(ctx context.Context, date string) (*Report, error) {
+	now := s.now()
+	start, err := time.ParseInLocation("2006-01-02", date, now.Location())
+	if err != nil || start.Format("2006-01-02") != date {
+		return nil, fmt.Errorf("%w: expected YYYY-MM-DD", ErrInvalidDate)
+	}
+	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	if start.After(today) {
+		return nil, fmt.Errorf("%w: future dates are not allowed", ErrInvalidDate)
+	}
+	end := start.AddDate(0, 0, 1)
+	if start.Equal(today) {
+		end = now
+	}
+	return s.generate(ctx, date, start, end, true)
+}
+
 func (s *Scheduler) generate(ctx context.Context, date string, start, end time.Time, force bool) (*Report, error) {
-	s.genMu.Lock()
-	defer s.genMu.Unlock()
+	select {
+	case s.genMu <- struct{}{}:
+		defer func() { <-s.genMu }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if s.jobs == nil {
 		return nil, fmt.Errorf("no job store")
@@ -191,11 +229,19 @@ func (s *Scheduler) generate(ctx context.Context, date string, start, end time.T
 	}
 
 	jobs := s.jobs.CompletedBetween(start.UnixMilli(), end.UnixMilli())
+	pending := s.jobs.UnfinishedBetween(start.UnixMilli(), end.UnixMilli())
+	coverageNote := ""
+	if pending > 0 {
+		coverageNote = fmt.Sprintf("> 本报告仅包含已完成分析的录音。生成时还有 %d 段录音正在处理，尚未纳入。\n\n", pending)
+	}
 	r.JobCount = len(jobs)
 	r.DurationSeconds = totalDuration(jobs)
 	if len(jobs) == 0 {
-		r.Content = emptyContent(start, end)
+		r.Content = coverageNote + emptyContent(start, end)
 		r.Summary = "这个时间段没有已分析的录音。"
+		if pending > 0 {
+			r.Summary += fmt.Sprintf("另有 %d 段录音待处理。", pending)
+		}
 		r.Status = StatusDone
 		r.Stage = "done"
 		r.GeneratedAt = s.now()
@@ -210,6 +256,7 @@ func (s *Scheduler) generate(ctx context.Context, date string, start, end time.T
 	})
 
 	material := buildMaterial(r, jobs)
+	detailJobs := jobs
 	content, err := "", error(nil)
 	if s.reporter != nil {
 		content, err = s.reporter.GenerateDailyReport(ctx, material)
@@ -220,12 +267,18 @@ func (s *Scheduler) generate(ctx context.Context, date string, start, end time.T
 		if err == nil {
 			err = fmt.Errorf("empty report")
 		}
-		r.Error = "日报模型不可用，已回退为分段摘要：" + err.Error()
+		r.Error = "日报汇总未完成，已保留分段材料：" + err.Error()
 		content = fallbackContent(r, jobs)
+		detailJobs = fallbackDetailJobs(jobs)
 	}
 	r.Content = strings.TrimSpace(content)
 	r.Summary = summarize(r, jobs)
-	if detail, derr := buildInteractiveDetail(r, jobs); derr == nil {
+	// Counts and duration come from stored jobs, never from model arithmetic.
+	r.Content = coverageNote + fmt.Sprintf("> 已分析 %d 段录音，合计 %.1f 分钟。\n\n", r.JobCount, r.DurationSeconds/60) + r.Content
+	if pending > 0 {
+		r.Summary += fmt.Sprintf("另有 %d 段录音待处理。", pending)
+	}
+	if detail, derr := buildInteractiveDetail(r, detailJobs); derr == nil {
 		r.Detail = detail
 	} else {
 		log.Printf("report: interactive detail: %v", derr)
@@ -401,58 +454,151 @@ func buildMaterial(r *Report, jobs []*job.Job) string {
 		r.Date, r.PeriodStart.Format("01-02 15:04"), r.PeriodEnd.Format("01-02 15:04"),
 		r.JobCount, int(r.DurationSeconds/60+0.5))
 
-	const maxRunes = 24000
-	const summaryRunes = 16000
-	used := len([]rune(b.String()))
-
-	// 先把每段的摘要都带上，避免前面的转写把后面的段挤出预算。
-	for _, j := range jobs {
+	b.WriteString("说明：以下仅为本时间段已完成分析的录音材料与统计，不代表手机上全部录音。未命名的说话人编号只在各自分段内有效，不能据此认定跨段是同一人。\n")
+	b.WriteString("来源限制：录音可能包含背景播放、引用或抒情内容，不能据第一人称判断是录音者本人的经历、承诺或心理状态。分段摘要和风险字段也可能包含模型归纳；来源未确认的心理、情绪解读不是已发生风险，只描述材料字面内容，保留原文明示的实际事件与具体风险。\n")
+	b.WriteString("证据优先级：有原始转写的录音仅提供完整原文；只有原文缺失时才提供自动摘要及待办、风险候选作为参考，不得直接当作已确认事实。\n")
+	// 交给 Reporter 分块归并，不能在这里提前截掉一天后半段的材料。
+	for i, j := range jobs {
 		if j.Result == nil {
 			continue
 		}
-		summary := strings.TrimSpace(j.Result.Summary)
-		if summary == "" {
+		fmt.Fprintf(&b, "\n### 录音 %d · %s（%.1f 分钟）\n", i+1,
+			jobStart(j).Format("01-02 15:04:05"), jobDuration(j)/60)
+		transcript := materialTranscriptWithAudio(j, i, true)
+		if transcript != "" {
+			fmt.Fprintf(&b, "原始转写（主证据）：\n%s\n", transcript)
+			// Earlier model candidates can contaminate a fresh report even when
+			// labelled uncertain. With source text available, only send the source.
 			continue
 		}
-		line := fmt.Sprintf("- %s（%.1f 分钟）%s\n",
-			jobStart(j).Format("15:04"), jobDuration(j)/60, toSingleLine(summary))
-		if used+len([]rune(line)) > summaryRunes {
-			b.WriteString("- （其余分段摘要省略）\n")
-			break
+		b.WriteString("原始转写缺失：以下自动分析仅供参考，无法据此核实为原文事实。\n")
+		if summary := strings.TrimSpace(j.Result.Summary); summary != "" {
+			fmt.Fprintf(&b, "自动摘要（原始转写缺失，仅供参考）：%s\n", summary)
 		}
-		b.WriteString(line)
-		used += len([]rune(line))
-	}
-
-	// 分析失败/没有摘要的段，补上转写节选，别让这些段完全消失。
-	var extra strings.Builder
-	extraUsed := 0
-	for _, j := range jobs {
-		if j.Result == nil || strings.TrimSpace(j.Result.Summary) != "" {
-			continue
+		facts := segmentFacts(j)
+		for k := range facts.Actions {
+			facts.Actions[k].Speaker = actionSpeaker(j, i, facts.Actions[k].Speaker)
 		}
-		text := transcriptText(j.Result.Segments)
-		if text == "" {
-			continue
+		if len(facts.Actions) > 0 {
+			data, _ := json.Marshal(facts.Actions)
+			fmt.Fprintf(&b, "分段模型提取的待办候选（须核对原文，不代表已确认）：%s\n", data)
 		}
-		line := fmt.Sprintf("- %s：%s\n",
-			jobStart(j).Format("15:04"), excerpt(text, 600))
-		if used+extraUsed+len([]rune(line)) > maxRunes {
-			extra.WriteString("- （其余转写省略）\n")
-			break
+		if len(facts.Risks) > 0 {
+			data, _ := json.Marshal(facts.Risks)
+			fmt.Fprintf(&b, "分段模型提取的风险候选（须核对原文，不代表已确认）：%s\n", data)
 		}
-		extra.WriteString(line)
-		extraUsed += len([]rune(line))
-	}
-	if extra.Len() > 0 {
-		b.WriteString("\n补充转写：\n")
-		b.WriteString(extra.String())
+		if len(facts.Constraints) > 0 {
+			data, _ := json.Marshal(facts.Constraints)
+			fmt.Fprintf(&b, "分段模型提取的限制候选（须核对原文，不代表已确认）：%s\n", data)
+		}
 	}
 	return b.String()
 }
 
+// Keep source information beside each utterance so report chunking cannot
+// turn local speaker numbers into identities shared across recordings.
+func materialTranscript(j *job.Job, index int) string {
+	return materialTranscriptWithAudio(j, index, false)
+}
+
+func materialTranscriptWithAudio(j *job.Job, index int, includeAudio bool) string {
+	parts := make([]string, 0, len(j.Result.Segments))
+	var events []infer.AudioEvent
+	if includeAudio {
+		for _, event := range j.Result.AudioEvents {
+			converted := infer.AudioEvent{Start: event.Start, End: event.End}
+			for _, tag := range event.Tags {
+				converted.Tags = append(converted.Tags, infer.AudioEventTag{Label: tag.Label, Score: tag.Score})
+			}
+			events = append(events, converted)
+		}
+	}
+	start := jobStart(j)
+	for _, seg := range j.Result.Segments {
+		text := strings.TrimSpace(seg.Text)
+		if text == "" {
+			continue
+		}
+		if labels := infer.AudioLabelsForRange(events, seg.Start, seg.End); len(labels) > 0 {
+			parts = append(parts, "自动声音线索：对应下方原文时段，仅辅助，非场景证明；"+strings.Join(labels, "、"))
+		}
+		parts = append(parts, fmt.Sprintf("[%s] %s", utteranceSourceLabel(start, index, seg), text))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// The label is the same in evidence material and downloaded detail. It is a
+// display label, not a unique key: equal timestamps/names can legitimately collide.
+func utteranceSourceLabel(start time.Time, recordingIndex int, seg job.Segment) string {
+	name := strings.TrimSpace(seg.PersonName)
+	if name == "" {
+		name = strings.TrimSpace(seg.Person)
+	}
+	if name == "" {
+		speaker := strings.TrimSpace(seg.Speaker)
+		if speaker == "" {
+			speaker = "未确认"
+		}
+		name = fmt.Sprintf("录音%d/%s", recordingIndex+1, speaker)
+	}
+	at := start.Add(time.Duration(seg.Start * float64(time.Second)))
+	return fmt.Sprintf("%s · %s", at.Format("01-02 15:04:05.000"), name)
+}
+
+type recordedFacts struct {
+	Actions []struct {
+		Speaker string `json:"speaker"`
+		Owner   string `json:"owner,omitempty"`
+		Action  string `json:"action"`
+		Details string `json:"details"`
+	} `json:"actions"`
+	Risks       []string `json:"risks"`
+	Constraints []string `json:"constraints"`
+}
+
+func segmentFacts(j *job.Job) recordedFacts {
+	var facts recordedFacts
+	if j.Result != nil {
+		_ = json.Unmarshal(j.Result.Analysis, &facts)
+	}
+	return facts
+}
+
+// 未命名的局部编号必须附带来源，避免后续分块把同号说话人合并为同一人。
+func actionSpeaker(j *job.Job, index int, speaker string) string {
+	speaker = strings.TrimSpace(speaker)
+	if speaker == "" {
+		return "未明确"
+	}
+	if j.Result != nil {
+		for _, seg := range j.Result.Segments {
+			if seg.Speaker == speaker {
+				if name := strings.TrimSpace(seg.PersonName); name != "" {
+					return name
+				}
+				if name := strings.TrimSpace(seg.Person); name != "" {
+					return name
+				}
+				return fmt.Sprintf("录音%d/%s", index+1, speaker)
+			}
+		}
+	}
+	if strings.HasPrefix(speaker, "spk") || strings.HasPrefix(speaker, "说话人") {
+		return fmt.Sprintf("录音%d/%s", index+1, speaker)
+	}
+	return speaker
+}
+
 func toSingleLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+func actionDescription(owner, action, details string) string {
+	text := strings.TrimSpace(action + " " + details)
+	if owner = strings.TrimSpace(owner); owner != "" {
+		return "负责人：" + owner + " · " + text
+	}
+	return "负责人未明确 · " + text
 }
 
 func transcriptText(segs []job.Segment) string {
@@ -475,16 +621,7 @@ func excerpt(s string, max int) string {
 }
 
 func jobStart(j *job.Job) time.Time {
-	var end time.Time
-	if j.RecordedAt > 0 {
-		end = time.UnixMilli(j.RecordedAt)
-	} else {
-		end = j.CreatedAt
-	}
-	if d := jobDuration(j); d > 0 {
-		return end.Add(-time.Duration(d * float64(time.Second)))
-	}
-	return end
+	return job.RecordingStart(j)
 }
 
 func emptyContent(start, end time.Time) string {
@@ -494,31 +631,76 @@ func emptyContent(start, end time.Time) string {
 
 func fallbackContent(r *Report, jobs []*job.Job) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## 今日概览\n\n- 录音 %d 段，共 %d 分钟\n\n## 分段摘要\n\n",
+	b.WriteString("> 本次日报汇总未完成，以下为已保留的分段材料。有原文的录音展示完整转写；原文缺失时的自动摘要、待办和风险候选需核对，不代表已确认。\n\n")
+	fmt.Fprintf(&b, "## 今日概览\n\n- 录音 %d 段，共 %d 分钟\n\n## 分段材料\n\n",
 		r.JobCount, int(r.DurationSeconds/60+0.5))
-	const maxFallbackRunes = 20000
-	used := len([]rune(b.String()))
-	for _, j := range jobs {
+	var actions, risks, constraints []string
+	for i, j := range jobs {
 		if j.Result == nil {
 			continue
 		}
-		line := strings.TrimSpace(j.Result.Summary)
-		if line == "" {
-			line = excerpt(transcriptText(j.Result.Segments), 180)
-		}
-		if line == "" {
+		when := jobStart(j).Format("01-02 15:04:05")
+		fmt.Fprintf(&b, "### 录音 %d · %s（%.1f 分钟）\n\n", i+1, when, jobDuration(j)/60)
+		if transcript := materialTranscript(j, i); transcript != "" {
+			fmt.Fprintf(&b, "原始转写：\n\n%s\n\n", transcript)
+			// A failed synthesis must not reintroduce old model inferences that
+			// were deliberately excluded from the source-backed report input.
 			continue
 		}
-		add := fmt.Sprintf("- %s · %s\n", jobStart(j).Format("15:04"), toSingleLine(line))
-		if used+len([]rune(add)) > maxFallbackRunes {
-			b.WriteString("- （其余分段省略）\n")
-			break
+		b.WriteString("> 原始转写缺失，以下自动分析需核对原文，不代表已确认。\n\n")
+		if summary := strings.TrimSpace(j.Result.Summary); summary != "" {
+			fmt.Fprintf(&b, "自动摘要（需核对原文）：%s\n\n", summary)
 		}
-		b.WriteString(add)
-		used += len([]rune(add))
+		source := fmt.Sprintf("录音 %d · %s", i+1, when)
+		facts := segmentFacts(j)
+		for _, a := range facts.Actions {
+			if strings.TrimSpace(a.Action) != "" {
+				actions = append(actions, fmt.Sprintf("- %s · 来源：%s · %s", source,
+					toSingleLine(actionSpeaker(j, i, a.Speaker)), toSingleLine(actionDescription(a.Owner, a.Action, a.Details))))
+			}
+		}
+		for _, risk := range facts.Risks {
+			if strings.TrimSpace(risk) != "" {
+				risks = append(risks, "- "+source+" · "+toSingleLine(risk))
+			}
+		}
+		for _, constraint := range facts.Constraints {
+			if strings.TrimSpace(constraint) != "" {
+				constraints = append(constraints, "- "+source+" · "+toSingleLine(constraint))
+			}
+		}
 	}
-	b.WriteString("\n## 待办\n\n未发现明确待办\n\n## 风险与异常\n\n未发现")
+	if len(actions) > 0 {
+		b.WriteString("\n## 分段待办候选（原文缺失，须核对，不代表已确认）\n\n")
+		b.WriteString(strings.Join(actions, "\n"))
+	}
+	if len(risks) > 0 {
+		b.WriteString("\n\n## 分段风险候选（原文缺失，须核对，不代表已确认）\n\n")
+		b.WriteString(strings.Join(risks, "\n"))
+	}
+	if len(constraints) > 0 {
+		b.WriteString("\n\n## 分段限制候选（原文缺失，须核对，不代表已确认）\n\n")
+		b.WriteString(strings.Join(constraints, "\n"))
+	}
 	return b.String()
+}
+
+// Fallback pages must not reintroduce old model topics or actions beside the
+// source-only body. Use display copies; preserve original stored analysis.
+func fallbackDetailJobs(jobs []*job.Job) []*job.Job {
+	out := append([]*job.Job(nil), jobs...)
+	for i, j := range jobs {
+		if j == nil || j.Result == nil || transcriptText(j.Result.Segments) == "" {
+			continue
+		}
+		copyJob := *j
+		copyResult := *j.Result
+		copyResult.Summary = ""
+		copyResult.Analysis = nil
+		copyJob.Result = &copyResult
+		out[i] = &copyJob
+	}
+	return out
 }
 
 func summarize(r *Report, jobs []*job.Job) string {
@@ -543,15 +725,19 @@ func summarize(r *Report, jobs []*job.Job) string {
 // buildInteractiveDetail 生成手机端可点击的时间线/人物/上下文数据。
 // 主题优先使用每段已生成的分段摘要；没有摘要时用“对话”。
 type detailUtterance struct {
-	ID      int    `json:"id"`
-	Session int    `json:"session"`
-	Time    string `json:"time"`
-	HM      string `json:"hm"`
-	Person  string `json:"person"`
-	PID     string `json:"pid"`
-	Speaker string `json:"speaker"`
-	Topic   string `json:"topic"`
-	Text    string `json:"text"`
+	RecordingIndex int    `json:"recording_index"` // One-based position in this report.
+	SegmentIndex   int    `json:"segment_index"`   // Zero-based original segment, including empty entries.
+	StartMS        int64  `json:"start_ms"`        // Offset within this recording.
+	SourceLabel    string `json:"source_label"`
+	ID             int    `json:"id"`
+	Session        int    `json:"session"`
+	Time           string `json:"time"`
+	HM             string `json:"hm"`
+	Person         string `json:"person"`
+	PID            string `json:"pid"`
+	Speaker        string `json:"speaker"`
+	Topic          string `json:"topic"`
+	Text           string `json:"text"`
 }
 
 type detailPerson struct {
@@ -591,11 +777,20 @@ type detailPayload struct {
 	People     []detailPerson    `json:"people"`
 	Sessions   []detailSession   `json:"sessions"`
 	Utterances []detailUtterance `json:"utterances"`
+	Actions    []detailAction    `json:"actions,omitempty"`
+}
+
+type detailAction struct {
+	FirstUtteranceID int    `json:"first_utterance_id"` // Recording start, not inferred action evidence.
+	Text             string `json:"text"`
+	Source           string `json:"source"`
+	Session          int    `json:"session"`
 }
 
 type detailRow struct {
 	detailUtterance
-	when time.Time
+	when     time.Time
+	jobIndex int
 }
 
 func shortTopic(s string) string {
@@ -616,14 +811,14 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 	chars := map[string]int{}
 	talk := map[string]float64{}
 	contentFiles := 0
-	for _, j := range jobs {
+	for jobIndex, j := range jobs {
 		if j.Result == nil {
 			continue
 		}
 		start := jobStart(j)
 		topic := shortTopic(j.Result.Summary)
 		has := false
-		for _, seg := range j.Result.Segments {
+		for segmentIndex, seg := range j.Result.Segments {
 			text := strings.TrimSpace(seg.Text)
 			if text == "" {
 				continue
@@ -634,10 +829,11 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 				name = strings.TrimSpace(seg.Person)
 			}
 			if name == "" {
-				name = strings.TrimSpace(seg.Speaker)
-			}
-			if name == "" {
-				name = "未确认"
+				label := strings.TrimSpace(seg.Speaker)
+				if label == "" {
+					label = "说话人"
+				}
+				name = fmt.Sprintf("未确认·片段%d/%s", jobIndex+1, label)
 			}
 			t := start.Add(time.Duration(seg.Start * float64(time.Second)))
 			d := seg.End - seg.Start
@@ -649,20 +845,26 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 			talk[name] += d
 			rows = append(rows, detailRow{
 				detailUtterance: detailUtterance{
-					Time: t.Format("01-02 15:04:05"), HM: t.Format("15:04:05"),
+					RecordingIndex: jobIndex + 1, SegmentIndex: segmentIndex,
+					StartMS:     int64(time.Duration(seg.Start*float64(time.Second)) / time.Millisecond),
+					SourceLabel: utteranceSourceLabel(start, jobIndex, seg),
+					Time:        t.Format("01-02 15:04:05"), HM: t.Format("15:04:05"),
 					Person: name, Speaker: seg.Speaker, Topic: topic, Text: text,
 				},
-				when: t,
+				when: t, jobIndex: jobIndex,
 			})
 		}
 		if has {
 			contentFiles++
 		}
 	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].when.Before(rows[j].when) })
 	// 180 秒无有效转写视为新会话。
 	sessions := make([]detailSession, 0)
 	utt := make([]detailUtterance, 0, len(rows))
 	session := -1
+	jobSessions := map[int]int{}
+	jobFirstUtterances := map[int]int{}
 	var last time.Time
 	for i := range rows {
 		row := &rows[i]
@@ -672,6 +874,10 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 		}
 		last = row.when
 		row.Session = session
+		if _, exists := jobSessions[row.jobIndex]; !exists {
+			jobSessions[row.jobIndex] = session
+			jobFirstUtterances[row.jobIndex] = i
+		}
 		row.ID = i
 		utt = append(utt, row.detailUtterance)
 		sessions[session].Turns++
@@ -706,8 +912,12 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 	}
 	people := make([]detailPerson, 0, len(names))
 	for _, n := range names {
+		status := "已命名"
+		if strings.HasPrefix(n, "未确认·") {
+			status = "未确认"
+		}
 		people = append(people, detailPerson{
-			Name: n, ID: "p_" + n, Status: "已登记", Turns: counts[n],
+			Name: n, ID: "p_" + n, Status: status, Turns: counts[n],
 			Talk: fmt.Sprintf("%.1f", talk[n]/60), Chars: fmt.Sprintf("%d", chars[n]),
 			Topics: "本日报中的发言", Blurb: "来自已转写录音的说话人。",
 		})
@@ -716,14 +926,32 @@ func buildInteractiveDetail(r *Report, jobs []*job.Job) (json.RawMessage, error)
 	for _, v := range talk {
 		totalTalk += v
 	}
+	actions := make([]detailAction, 0)
+	for i, j := range jobs {
+		sid, ok := jobSessions[i]
+		if !ok {
+			continue
+		}
+		for _, action := range segmentFacts(j).Actions {
+			if strings.TrimSpace(action.Action) == "" {
+				continue
+			}
+			actions = append(actions, detailAction{
+				FirstUtteranceID: jobFirstUtterances[i],
+				Text:             actionDescription(action.Owner, action.Action, action.Details),
+				Source:           fmt.Sprintf("回看录音 %d 起点 · %s · %s", i+1, jobStart(j).Format("15:04"), actionSpeaker(j, i, action.Speaker)),
+				Session:          sid,
+			})
+		}
+	}
 	payload := detailPayload{
-		Version: 1,
+		Version: 2,
 		Stats: detailStats{
 			TotalMinutes: r.DurationSeconds / 60, CandidateMinutes: r.DurationSeconds / 60,
 			TalkMinutes: totalTalk / 60, Utterances: len(utt), ContentFiles: contentFiles,
 			ProcessedFiles: len(jobs),
 		},
-		People: people, Sessions: sessions, Utterances: utt,
+		People: people, Sessions: sessions, Utterances: utt, Actions: actions,
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

@@ -12,6 +12,7 @@
   "pipeline": {
     "mode": "local",
     "workers": 1,
+    "inference_concurrency": 1,
     "queue": 100,
     "job_timeout_seconds": 1800
   },
@@ -28,9 +29,9 @@
   "lmstudio": {
     "base_url": "http://127.0.0.1:1234/v1",
     "api_key": "lm-studio",
-    "model": "qwen2.5-7b-instruct",
+    "model": "qwen3.5-4b-q4k",
     "reasoning_effort": "none",
-    "max_tokens": 1024,
+    "max_tokens": 4096,
     "temperature": 0,
     "timeout_seconds": 300,
     "json_mode": true

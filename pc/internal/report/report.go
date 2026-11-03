@@ -24,22 +24,22 @@ const (
 // Report 是一份日报。Content 是给手机显示的 Markdown 文本，
 // Summary 是通知栏用的一两句短摘要。
 type Report struct {
-	ID              string    `json:"id"`
-	Date            string    `json:"date"` // YYYY-MM-DD
-	Title           string    `json:"title"`
-	Status          Status    `json:"status"`
-	Stage           string    `json:"stage,omitempty"`
-	Error           string    `json:"error,omitempty"`
-	PeriodStart     time.Time `json:"period_start"`
-	PeriodEnd       time.Time `json:"period_end"`
-	JobCount        int       `json:"job_count"`
-	DurationSeconds float64   `json:"duration_seconds"`
+	ID              string          `json:"id"`
+	Date            string          `json:"date"` // YYYY-MM-DD
+	Title           string          `json:"title"`
+	Status          Status          `json:"status"`
+	Stage           string          `json:"stage,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	PeriodStart     time.Time       `json:"period_start"`
+	PeriodEnd       time.Time       `json:"period_end"`
+	JobCount        int             `json:"job_count"`
+	DurationSeconds float64         `json:"duration_seconds"`
 	Summary         string          `json:"summary"`
 	Content         string          `json:"content"`
 	Detail          json.RawMessage `json:"detail,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
-	GeneratedAt     time.Time `json:"generated_at,omitempty"`
-	DeliveredTo     []string  `json:"delivered_to,omitempty"`
+	GeneratedAt     time.Time       `json:"generated_at,omitempty"`
+	DeliveredTo     []string        `json:"delivered_to,omitempty"`
 }
 
 type Store struct {
@@ -95,14 +95,17 @@ func (s *Store) Save(r *Report) error {
 	cp := clone(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.saveFile(cp); err != nil {
+		return err
+	}
 	s.reports[cp.ID] = cp
-	return s.saveFile(cp)
+	return nil
 }
 
 func (s *Store) Get(id string) (*Report, bool) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	r, ok := s.reports[id]
-	s.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
@@ -116,8 +119,13 @@ func (s *Store) Update(id string, fn func(*Report)) error {
 	if !ok {
 		return os.ErrNotExist
 	}
-	fn(r)
-	return s.saveFile(r)
+	updated := clone(r)
+	fn(updated)
+	if err := s.saveFile(updated); err != nil {
+		return err
+	}
+	s.reports[id] = updated
+	return nil
 }
 
 func (s *Store) List(limit int) []*Report {
@@ -131,7 +139,7 @@ func (s *Store) List(limit int) []*Report {
 	}
 	s.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool {
-		return reportTime(out[i]).After(reportTime(out[j]))
+		return reportNewer(out[i], out[j])
 	})
 	if len(out) > limit {
 		out = out[:limit]
@@ -140,22 +148,12 @@ func (s *Store) List(limit int) []*Report {
 }
 
 func (s *Store) LatestDone() (*Report, bool) {
-	for _, r := range s.List(200) {
-		if r.Status == StatusDone {
-			return r, true
-		}
-	}
-	return nil, false
+	return s.latestMatching(func(r *Report) bool { return r.Status == StatusDone })
 }
 
 // LatestForDate 返回某一天最新的一份日报（手动重新生成时可能有多份）。
 func (s *Store) LatestForDate(date string) (*Report, bool) {
-	for _, r := range s.List(200) {
-		if r.Date == date {
-			return r, true
-		}
-	}
-	return nil, false
+	return s.latestMatching(func(r *Report) bool { return r.Date == date })
 }
 
 // HasDate 表示这一天的日报已经生成/正在生成，定时器不要再重复生成。
@@ -176,21 +174,17 @@ func (s *Store) PendingFor(deviceID string) []*Report {
 	if deviceID == "" {
 		return nil
 	}
-	for _, r := range s.List(200) {
-		if r.Status != StatusDone || r.JobCount == 0 {
-			// 空日报不推送，避免手机收到“今天没有录音”的噪音。
-			// 之后如果补传了录音，定时器会重新生成有内容的日报再推。
-			continue
-		}
-		if !contains(r.DeliveredTo, deviceID) {
-			return []*Report{r}
-		}
+	r, ok := s.latestMatching(func(r *Report) bool {
+		return r.Status == StatusDone && r.JobCount > 0 && !contains(r.DeliveredTo, deviceID)
+	})
+	if ok {
+		return []*Report{r}
 	}
 	return nil
 }
 
-// Ack 标记某台设备已经收到日报。比它更早的日报也一并标记，
-// 这样补推时不会按时间倒序把历史日报一条条弹出来。
+// Ack only confirms the named report. A newer download cannot prove that an
+// older version was downloaded, especially when history spans multiple pages.
 func (s *Store) Ack(id, deviceID string) bool {
 	if deviceID == "" {
 		return false
@@ -198,25 +192,19 @@ func (s *Store) Ack(id, deviceID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	target, ok := s.reports[id]
-	if !ok {
+	if !ok || target.Status != StatusDone {
 		return false
 	}
-	t := reportTime(target)
-	changed := false
-	for _, r := range s.reports {
-		if r.Status != StatusDone {
-			continue
-		}
-		if r.ID != target.ID && reportTime(r).After(t) {
-			continue
-		}
-		if !contains(r.DeliveredTo, deviceID) {
-			r.DeliveredTo = append(r.DeliveredTo, deviceID)
-			_ = s.saveFile(r)
-			changed = true
-		}
+	if contains(target.DeliveredTo, deviceID) {
+		return true
 	}
-	return changed || contains(target.DeliveredTo, deviceID)
+	updated := clone(target)
+	updated.DeliveredTo = append(updated.DeliveredTo, deviceID)
+	if err := s.saveFile(updated); err != nil {
+		return false
+	}
+	s.reports[id] = updated
+	return true
 }
 
 // Retention 删除超过保留天数的日报（正在进行中的保留）。
@@ -305,6 +293,7 @@ func clone(r *Report) *Report {
 		return nil
 	}
 	cp := *r
+	cp.Detail = append(json.RawMessage(nil), r.Detail...)
 	cp.DeliveredTo = append([]string(nil), r.DeliveredTo...)
 	return &cp
 }

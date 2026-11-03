@@ -11,15 +11,16 @@ import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.text.method.LinkMovementMethod;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -28,6 +29,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 手机端对话日报。
@@ -45,6 +48,7 @@ public class ReportDetailActivity extends Activity {
     private static final int MODE_HOME = 0;
     private static final int MODE_SESSION = 1;
     private static final int MODE_PERSON = 2;
+    private static final ExecutorService LOAD_EXEC = Executors.newSingleThreadExecutor();
 
     private JSONObject report;
     private JSONObject detail;
@@ -62,7 +66,15 @@ public class ReportDetailActivity extends Activity {
     private int mode = MODE_HOME;
     private int currentSession = -1;
     private String currentPerson = "";
+    private int homeScrollY;
     private MediaPlayer player;
+    private TextView playingLabel;
+    private TextView refreshButton;
+    private String reportId;
+    private boolean loading;
+    private final Map<Integer, View> utteranceRows = new HashMap<>();
+    private int highlightedUtterance = -1;
+    private boolean sourcesExpanded;
 
     public static Intent intent(Activity from, String reportId) {
         return new Intent(from, ReportDetailActivity.class).putExtra(EXTRA_REPORT_ID, reportId);
@@ -73,32 +85,97 @@ public class ReportDetailActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_report_detail);
 
-        String reportId = getIntent().getStringExtra(EXTRA_REPORT_ID);
-        report = DailyReports.get(this, reportId);
-        detail = report == null ? null : report.optJSONObject("detail");
-        if (detail != null) {
-            stats = detail.optJSONObject("stats");
-            sessions = detail.optJSONArray("sessions");
-            people = detail.optJSONArray("people");
-            utterances = detail.optJSONArray("utterances");
-            highlights = detail.optJSONArray("highlights");
-            actions = detail.optJSONArray("actions");
-        }
-
+        reportId = getIntent().getStringExtra(EXTRA_REPORT_ID);
         content = findViewById(R.id.detailContent);
         scroll = findViewById(R.id.detailScroll);
         tvTitle = findViewById(R.id.tvDetailTitle);
         tvMeta = findViewById(R.id.tvDetailMeta);
         findViewById(R.id.detailTabs).setVisibility(View.GONE);
         findViewById(R.id.btnDetailBack).setOnClickListener(v -> goBack());
+        refreshButton = findViewById(R.id.btnDetailRefresh);
+        refreshButton.setOnClickListener(v -> syncReport());
+        int savedScroll = 0;
+        if (savedInstanceState != null) {
+            mode = savedInstanceState.getInt("mode", MODE_HOME);
+            currentSession = savedInstanceState.getInt("session", -1);
+            highlightedUtterance = savedInstanceState.getInt("utterance", -1);
+            sourcesExpanded = savedInstanceState.getBoolean("sources_expanded", false);
+            currentPerson = savedInstanceState.getString("person", "");
+            homeScrollY = savedInstanceState.getInt("home_scroll", 0);
+            savedScroll = savedInstanceState.getInt("scroll", 0);
+        }
+        tvTitle.setText("录音日报");
+        tvMeta.setText("正在读取…");
+        loadReport(savedScroll);
+    }
 
-        if (detail == null || utterances == null) {
-            tvTitle.setText("对话日报");
-            tvMeta.setText("暂无结构化详情");
-            addEmpty("电脑端还没有这份日报的逐句结构。更新电脑端后重新生成日报即可。");
+    private void loadReport(int scrollY) {
+        int previousMode = mode;
+        int previousSession = currentSession;
+        int previousUtterance = highlightedUtterance;
+        String previousPerson = currentPerson;
+        int previousHomeScroll = homeScrollY;
+        loading = true;
+        refreshButton.setEnabled(false);
+        LOAD_EXEC.execute(() -> {
+            JSONObject cached = DailyReports.get(getApplicationContext(), reportId);
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                loading = false;
+                refreshButton.setEnabled(true);
+                refreshButton.setText("同步");
+                report = cached;
+                detail = report == null ? null : report.optJSONObject("detail");
+                stats = detail == null ? null : detail.optJSONObject("stats");
+                sessions = detail == null ? null : detail.optJSONArray("sessions");
+                people = detail == null ? null : detail.optJSONArray("people");
+                utterances = detail == null ? null : detail.optJSONArray("utterances");
+                highlights = detail == null ? null : detail.optJSONArray("highlights");
+                actions = detail == null ? null : detail.optJSONArray("actions");
+                renderHome();
+                if (utterances != null && previousMode == MODE_SESSION) {
+                    openSession(previousSession);
+                    highlightUtterance(previousUtterance, false);
+                }
+                if (utterances != null && previousMode == MODE_PERSON) openPerson(previousPerson);
+                homeScrollY = previousHomeScroll;
+                scroll.post(() -> scroll.scrollTo(0, scrollY));
+            });
+        });
+    }
+
+    private void syncReport() {
+        if (loading) return;
+        if (!Settings.connected(this)) {
+            Toast.makeText(this, "尚未连接电脑，已保存的日报仍可离线阅读", Toast.LENGTH_LONG).show();
             return;
         }
-        renderHome();
+        loading = true;
+        refreshButton.setEnabled(false);
+        refreshButton.setText("同步中…");
+        DailyReports.syncHistory(this, (ok, message) -> {
+            if (isFinishing() || isDestroyed()) return;
+            if (!ok) Toast.makeText(this, "同步失败，保留本地日报；稍后可重试", Toast.LENGTH_LONG).show();
+            loadReport(scroll.getScrollY());
+        });
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putInt("mode", mode);
+        state.putInt("session", currentSession);
+        state.putInt("utterance", highlightedUtterance);
+        state.putBoolean("sources_expanded", sourcesExpanded);
+        state.putString("person", currentPerson);
+        state.putInt("home_scroll", homeScrollY);
+        state.putInt("scroll", scroll.getScrollY());
+    }
+
+    @Override
+    protected void onStop() {
+        stopPlayer();
+        super.onStop();
     }
 
     @Override
@@ -113,8 +190,15 @@ public class ReportDetailActivity extends Activity {
     }
 
     private void goBack() {
+        if (loading && report == null) {
+            finish();
+            return;
+        }
         if (mode != MODE_HOME) {
             renderHome();
+            scroll.post(() -> {
+                if (mode == MODE_HOME) scroll.scrollTo(0, homeScrollY);
+            });
         } else {
             finish();
         }
@@ -123,119 +207,246 @@ public class ReportDetailActivity extends Activity {
     // ---------------- 首页 ----------------
 
     private void renderHome() {
+        stopPlayer();
         mode = MODE_HOME;
+        highlightedUtterance = -1;
+        utteranceRows.clear();
         currentSession = -1;
         currentPerson = "";
         String title = report == null ? "对话日报" : report.optString("title", "对话日报");
         String date = report == null ? "" : report.optString("date", "");
-        tvTitle.setText("对话日报");
-        tvMeta.setText((date.isEmpty() ? "今天" : date) + " · " + utterances.length() + " 句 · " + peopleCount() + " 人");
+        tvTitle.setText("录音日报");
+        tvMeta.setText((date.isEmpty() ? "" : date + " · ") + "已保存在手机，可离线阅读");
         content.removeAllViews();
+        scroll.scrollTo(0, 0);
+
+        if (report == null) {
+            tvMeta.setText("这份日报尚未保存在手机");
+            refreshButton.setText("重试");
+            addEmpty("连接电脑后，点右上角「重试」下载日报。已有日报可在「日报」页离线查看。");
+            return;
+        }
+        DailyReports.markRead(this, reportId);
+        if (DailyReports.summaryIncomplete(report)) {
+            tvMeta.setText((date.isEmpty() ? "" : date + " · ") + "汇总未完成 · 分段材料已保存在手机");
+            addEmpty("本次汇总未完成，可先查看已保留的分段材料；有原始转写时可回看原文。右上角「同步」只下载电脑端已有日报，不会重新生成。");
+        }
+        if (detail == null || utterances == null) {
+            addSection(title, report.optInt("job_count", 0) + " 段录音 · "
+                    + Math.round(report.optDouble("duration_seconds", 0) / 60) + " 分钟");
+            addReportBody();
+            return;
+        }
 
         addHero(title);
         addKpiRow();
+        addReportBody();
+        addSourceList();
         addHighlights();
-        addTimeline();
-        addPeople();
         addActions();
         addPending();
+        addTimeline();
+        addPeople();
         addFootNote();
+    }
+
+    private void addReportBody() {
+        String body = report.optString("content", "").trim();
+        if (body.isEmpty()) body = report.optString("summary", "").trim();
+        if (body.isEmpty()) {
+            if (detail == null || utterances == null) addEmpty("这份日报还没有正文，稍后同步重试。");
+            return;
+        }
+        LinearLayout card = card();
+        card.setPadding(dp(22), dp(22), dp(22), dp(22));
+        TextView text = text("", 16, getColor(R.color.text_primary), false);
+        text.setText(ReportMarkdown.render(this, body));
+        text.setLineSpacing(dp(7), 1.05f);
+        text.setTextIsSelectable(true);
+        text.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
+        card.addView(text);
+        content.addView(card);
+    }
+
+    /** Only labels carried by structured detail are links; body dates stay plain text. */
+    private void addSourceList() {
+        if (utterances == null) return;
+        Map<String, Integer> uniqueLabels = new HashMap<>();
+        for (int i = 0; i < utterances.length(); i++) {
+            JSONObject u = utterances.optJSONObject(i);
+            if (u == null || !u.has("recording_index") || !u.has("segment_index")) continue;
+            String label = u.optString("source_label", "");
+            int id = u.optInt("id", -1);
+            if (label.isEmpty() || id < 0) continue;
+            uniqueLabels.put(label, uniqueLabels.containsKey(label) ? -1 : id);
+        }
+        if (uniqueLabels.isEmpty()) return; // Old reports retain their existing timeline.
+        LinearLayout sourceCard = card();
+        TextView toggle = text("原始录音来源 · 展开", 15, getColor(R.color.brand), true);
+        toggle.setMinHeight(dp(48));
+        toggle.setGravity(Gravity.CENTER_VERTICAL);
+        toggle.setFocusable(true);
+        sourceCard.addView(toggle);
+        LinearLayout sourceRows = new LinearLayout(this);
+        sourceRows.setOrientation(LinearLayout.VERTICAL);
+        sourceRows.setVisibility(View.GONE);
+        sourceCard.addView(sourceRows);
+        toggle.setOnClickListener(v -> {
+            boolean opening = sourceRows.getVisibility() != View.VISIBLE;
+            if (opening && sourceRows.getChildCount() == 0) {
+                sourceRows.addView(text("点来源定位原文。相同标签无法唯一定位时，仅打开所在对话范围。", 12, getColor(R.color.text_secondary), false));
+                for (int i = 0; i < utterances.length(); i++) {
+                    JSONObject u = utterances.optJSONObject(i);
+                    if (u == null || !u.has("recording_index") || !u.has("segment_index")) continue;
+                    String label = u.optString("source_label", "");
+                    Integer target = uniqueLabels.get(label);
+                    if (target == null) continue;
+                    TextView source = text("", 13, getColor(R.color.brand), false);
+                    source.setMinHeight(dp(48));
+                    source.setPadding(0, dp(10), 0, dp(10));
+                    source.setLineSpacing(dp(3), 1f);
+                    final int id = target;
+                    final int sid = u.optInt("session", -1);
+                    String display = "录音 " + u.optInt("recording_index") + " · 原文 "
+                            + (u.optInt("segment_index") + 1) + "\n" + label;
+                    if (id < 0) display += " · 查看对话范围";
+                    source.setText(ReportMarkdown.sourceLink(this, display, () -> {
+                        if (id >= 0) openUtterance(id);
+                        else openSession(sid);
+                    }));
+                    source.setMovementMethod(LinkMovementMethod.getInstance());
+                    source.setFocusable(true);
+                    source.setContentDescription(display + (id >= 0 ? "，定位原文" : ""));
+                    sourceRows.addView(source);
+                }
+            }
+            sourcesExpanded = opening;
+            sourceRows.setVisibility(opening ? View.VISIBLE : View.GONE);
+            toggle.setText(opening ? "原始录音来源 · 收起" : "原始录音来源 · 展开");
+        });
+        content.addView(sourceCard);
+        if (sourcesExpanded) toggle.performClick();
+    }
+
+    private JSONObject findUtterance(int id) {
+        if (id < 0 || utterances == null) return null;
+        for (int i = 0; i < utterances.length(); i++) {
+            JSONObject u = utterances.optJSONObject(i);
+            if (u != null && u.optInt("id", -1) == id) return u;
+        }
+        return null;
+    }
+
+    private void openUtterance(int id) {
+        JSONObject target = findUtterance(id);
+        if (target == null) return;
+        openSession(target.optInt("session", -1));
+        highlightUtterance(id, true);
+    }
+
+    private void highlightUtterance(int id, boolean move) {
+        View row = utteranceRows.get(id);
+        if (mode != MODE_SESSION || row == null) return;
+        highlightedUtterance = id;
+        row.setBackground(round(getColor(R.color.surface_tint), 12));
+        if (move) scroll.post(() -> {
+            if (isFinishing() || isDestroyed() || mode != MODE_SESSION
+                    || highlightedUtterance != id || utteranceRows.get(id) != row) return;
+            scroll.smoothScrollTo(0, Math.max(0, row.getTop() - dp(12)));
+            row.announceForAccessibility("已定位来源原文");
+        });
     }
 
     private void addHero(String title) {
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
-        hero.setPadding(dp(18), dp(16), dp(18), dp(16));
-        hero.setBackgroundResource(R.drawable.bg_hero);
+        hero.setPadding(dp(2), 0, dp(2), dp(24));
         content.addView(hero);
 
-        TextView kicker = text("TODAY · " + (report == null ? "" : report.optString("date", "")), 10, getColor(R.color.hero_text_dim), true);
+        TextView kicker = text(report == null ? "" : report.optString("date", ""), 12, getColor(R.color.brand), true);
         kicker.setLetterSpacing(0.08f);
         hero.addView(kicker);
-        hero.addView(text("今天聊了 " + sessionCount() + " 段对话", 22, Color.WHITE, true));
+        TextView heading = text(title, 27, getColor(R.color.text_primary), true);
+        heading.setPadding(0, dp(12), 0, 0);
+        heading.setAccessibilityHeading(true);
+        heading.setLineSpacing(dp(3), 1.0f);
+        hero.addView(heading);
         String overview = detail.optString("overview", "");
         if (overview.isEmpty()) overview = report == null ? "" : report.optString("summary", "");
-        TextView sub = text(overview, 13, getColor(R.color.hero_text_soft), false);
-        sub.setPadding(0, dp(5), 0, 0);
-        sub.setLineSpacing(dp(2), 1.0f);
+        TextView sub = text(overview, 15, getColor(R.color.text_secondary), false);
+        sub.setMaxLines(3);
+        sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sub.setPadding(0, dp(12), 0, 0);
+        sub.setLineSpacing(dp(5), 1.05f);
         hero.addView(sub);
     }
 
     private void addKpiRow() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(9), 0, 0);
+        row.setPadding(dp(10), dp(14), dp(10), dp(14));
+        row.setBackgroundResource(R.drawable.bg_summary);
         addKpi(row, String.valueOf(sessionCount()), "段对话");
-        addKpi(row, fmt(stats == null ? 0 : stats.optDouble("talk_minutes", 0)) + " min", "有效说话");
-        addKpi(row, String.valueOf(peopleCount()), "个人");
-        content.addView(row);
+        addKpi(row, fmt(stats == null ? 0 : stats.optDouble("talk_minutes", 0)), "发言分钟");
+        addKpi(row, String.valueOf(peopleCount()), "说话人标签");
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rowParams.bottomMargin = dp(24);
+        content.addView(row, rowParams);
     }
 
     private void addKpi(LinearLayout row, String value, String label) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(11), dp(8), dp(11), dp(8));
-        box.setBackgroundResource(R.drawable.bg_card);
-        box.addView(text(value, 16, getColor(R.color.text_primary), true));
-        box.addView(text(label, 10, getColor(R.color.text_secondary), false));
+        box.setPadding(dp(8), dp(4), dp(8), dp(4));
+        box.addView(text(value, 23, getColor(R.color.text_primary), true));
+        TextView caption = text(label, 12, getColor(R.color.text_secondary), false);
+        caption.setPadding(0, dp(7), 0, 0);
+        box.addView(caption);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        lp.rightMargin = dp(7);
         row.addView(box, lp);
     }
 
     private void addHighlights() {
         if (highlights == null || highlights.length() == 0) return;
-        addSection("今天发生了什么", "先看重点，再进时间线。");
-        HorizontalScrollView view = new HorizontalScrollView(this);
-        view.setHorizontalScrollBarEnabled(false);
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        view.addView(row);
+        addSection("重点回顾", "点开查看原始对话");
 
         for (int i = 0; i < highlights.length(); i++) {
             JSONObject h = highlights.optJSONObject(i);
             if (h == null) continue;
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(13), dp(11), dp(13), dp(11));
-            card.setBackgroundResource(R.drawable.bg_card);
-            card.setElevation(dp(1));
-            TextView time = text(h.optString("time", ""), 10, getColor(R.color.brand), true);
+            LinearLayout card = card();
+            TextView time = text(h.optString("time", ""), 12, getColor(R.color.brand), true);
             card.addView(time);
-            TextView t = text(h.optString("title", ""), 14, getColor(R.color.text_primary), true);
-            t.setPadding(0, dp(4), 0, 0);
+            TextView t = text(h.optString("title", ""), 17, getColor(R.color.text_primary), true);
+            t.setPadding(0, dp(9), 0, 0);
             card.addView(t);
-            TextView d = text(h.optString("detail", ""), 11, getColor(R.color.text_secondary), false);
-            d.setPadding(0, dp(3), 0, 0);
-            d.setMaxLines(3);
+            TextView d = text(h.optString("detail", ""), 14, getColor(R.color.text_secondary), false);
+            d.setPadding(0, dp(9), 0, 0);
+            d.setLineSpacing(dp(4), 1.0f);
             card.addView(d);
-            TextView open = text("打开这段 →", 11, getColor(R.color.brand), true);
-            open.setPadding(0, dp(7), 0, 0);
+            TextView open = text("查看对话 →", 13, getColor(R.color.brand), true);
+            open.setPadding(0, dp(14), 0, 0);
             card.addView(open);
             final int sid = h.optInt("session", -1);
             card.setOnClickListener(v -> openSession(sid));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(215), ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.rightMargin = dp(9);
-            row.addView(card, lp);
+            card.setFocusable(true);
+            content.addView(card);
         }
-        content.addView(view);
     }
 
     private void addTimeline() {
-        addSection("时间线", "点一段对话，看它的摘要和完整上下文。");
+        addSection("对话时间线", "按发生顺序，回到当时的上下文");
         if (sessions == null) return;
         for (int i = 0; i < sessions.length(); i++) {
             JSONObject s = sessions.optJSONObject(i);
             if (s == null) continue;
-            // 早晨碎片在人物页仍可见，但首页只放主会话。
-            if (s.optInt("id", i) >= 3) continue;
             addSessionCard(s, false);
         }
     }
 
     private void addPeople() {
         if (people == null || people.length() == 0) return;
-        addSection("人物", "点一个人，只看 TA 说过的话。");
+        addSection("说话人", "点标签查看相关发言。未确认的编号仅属于当前片段，不代表跨段是同一个人。");
         for (int i = 0; i < people.length(); i++) {
             JSONObject p = people.optJSONObject(i);
             if (p != null) addPersonRow(p);
@@ -244,24 +455,31 @@ public class ReportDetailActivity extends Activity {
 
     private void addActions() {
         if (actions == null || actions.length() == 0) return;
-        addSection("待办 / 决定", "只列录音里明确提到的事项。");
+        addSection("分段待办候选", "来自分段自动分析，需结合原文确认；点开回看录音起点，不代表任务原句。");
         LinearLayout card = card();
         for (int i = 0; i < actions.length(); i++) {
             JSONObject a = actions.optJSONObject(i);
             if (a == null) continue;
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(0, dp(4), 0, dp(4));
-            TextView dot = text("●", 9, getColor(R.color.brand), true);
+            row.setPadding(0, dp(8), 0, dp(8));
+            row.setMinimumHeight(dp(48));
+            TextView dot = text("□", 18, getColor(R.color.brand), false);
             dot.setPadding(0, dp(3), dp(8), 0);
             row.addView(dot);
             LinearLayout body = new LinearLayout(this);
             body.setOrientation(LinearLayout.VERTICAL);
-            body.addView(text(a.optString("text", ""), 13, getColor(R.color.text_primary), false));
+            body.addView(text(a.optString("text", ""), 15, getColor(R.color.text_primary), false));
             body.addView(text(a.optString("source", ""), 10, getColor(R.color.text_tertiary), false));
-            row.addView(body);
+            row.addView(body, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             final int sid = a.optInt("session", -1);
-            row.setOnClickListener(v -> openSession(sid));
+            final int firstUtterance = a.optInt("first_utterance_id", -1);
+            row.setFocusable(true);
+            row.setContentDescription(a.optString("text", "") + "，回看录音起点");
+            row.setOnClickListener(v -> {
+                if (findUtterance(firstUtterance) != null) openUtterance(firstUtterance);
+                else openSession(sid);
+            });
             card.addView(row);
         }
         content.addView(card);
@@ -273,9 +491,9 @@ public class ReportDetailActivity extends Activity {
         addSection("待确认", "");
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(11), dp(14), dp(11));
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
         card.setBackgroundResource(R.drawable.bg_warn_card);
-        card.addView(text("有相似声音，等你确认", 13, getColor(R.color.warning), true));
+        card.addView(text("需要核实的内容", 15, getColor(R.color.warning), true));
         TextView t = text(pending, 11, getColor(R.color.text_secondary), false);
         t.setPadding(0, dp(3), 0, 0);
         card.addView(t);
@@ -283,7 +501,7 @@ public class ReportDetailActivity extends Activity {
     }
 
     private void addFootNote() {
-        TextView t = text("只统计有有效转写的录音；静音和太短的碎片没有进入时间线。",
+        TextView t = text("来源于已完成转写的录音，可从时间线查看原文。",
                 10, getColor(R.color.text_tertiary), false);
         t.setPadding(dp(2), dp(16), dp(2), dp(4));
         content.addView(t);
@@ -294,8 +512,12 @@ public class ReportDetailActivity extends Activity {
     private void openSession(int sid) {
         JSONObject s = findSession(sid);
         if (s == null) return;
+        if (mode == MODE_HOME) homeScrollY = scroll.getScrollY();
+        stopPlayer();
         mode = MODE_SESSION;
         currentSession = s.optInt("id", sid);
+        highlightedUtterance = -1;
+        utteranceRows.clear();
         currentPerson = "";
         tvTitle.setText(s.optString("start", "") + "–" + s.optString("end", ""));
         tvMeta.setText(s.optString("title", "对话"));
@@ -305,20 +527,20 @@ public class ReportDetailActivity extends Activity {
         LinearLayout head = card();
         TextView topic = text(s.optString("topic", "对话"), 11, getColor(R.color.brand), true);
         head.addView(topic);
-        TextView title = text(s.optString("title", "对话"), 17, getColor(R.color.text_primary), true);
-        title.setPadding(0, dp(4), 0, 0);
+        TextView title = text(s.optString("title", "对话"), 22, getColor(R.color.text_primary), true);
+        title.setPadding(0, dp(10), 0, 0);
         head.addView(title);
         TextView meta = text(join(s.optJSONArray("people"), " / ") + "  ·  "
                 + s.optInt("turns", 0) + " 轮", 11, getColor(R.color.text_secondary), false);
         meta.setPadding(0, dp(4), 0, 0);
         head.addView(meta);
-        TextView sm = text(s.optString("summary", ""), 13, getColor(R.color.text_primary), false);
-        sm.setPadding(0, dp(9), 0, 0);
-        sm.setLineSpacing(dp(2), 1.0f);
+        TextView sm = text(s.optString("summary", ""), 15, getColor(R.color.text_primary), false);
+        sm.setPadding(0, dp(16), 0, 0);
+        sm.setLineSpacing(dp(5), 1.0f);
         head.addView(sm);
         content.addView(head);
 
-        addSection("对话", "每句旁边有主题；点“上下文”看前后接话。");
+        addSection("逐句记录", "点「上下文」查看前后的发言");
         int session = s.optInt("id", sid);
         int count = 0;
         for (int i = 0; i < utterances.length(); i++) {
@@ -336,7 +558,11 @@ public class ReportDetailActivity extends Activity {
     private void openPerson(String name) {
         JSONObject p = findPerson(name);
         if (p == null) return;
+        if (mode == MODE_HOME) homeScrollY = scroll.getScrollY();
+        stopPlayer();
         mode = MODE_PERSON;
+        highlightedUtterance = -1;
+        utteranceRows.clear();
         currentPerson = name;
         currentSession = -1;
         tvTitle.setText(displayName(name) + " 说过的话");
@@ -380,6 +606,8 @@ public class ReportDetailActivity extends Activity {
         line.addView(text(s.optString("title", "对话") + "  ·  " + count + " 句", 13, getColor(R.color.text_primary), true));
         final int sid = s.optInt("id", -1);
         line.setOnClickListener(v -> openSession(sid));
+        line.setFocusable(true);
+        line.setMinimumHeight(dp(48));
         content.addView(line);
     }
 
@@ -393,7 +621,7 @@ public class ReportDetailActivity extends Activity {
         TextView time = text(s.optString("start", "") + "–" + s.optString("end", ""), 11, getColor(R.color.brand), true);
         head.addView(time);
         TextView chip = text(s.optString("topic", "对话"), 10, getColor(R.color.text_secondary), false);
-        chip.setBackground(round(0xFFEEF3EF, 99));
+        chip.setBackground(round(getColor(R.color.surface_tint), 8));
         chip.setPadding(dp(7), dp(1), dp(7), dp(1));
         chip.setSingleLine(true);
         chip.setEllipsize(TextUtils.TruncateAt.END);
@@ -422,6 +650,7 @@ public class ReportDetailActivity extends Activity {
         card.addView(open);
         final int sid = s.optInt("id", -1);
         card.setOnClickListener(v -> openSession(sid));
+        card.setFocusable(true);
         content.addView(card);
     }
 
@@ -430,27 +659,38 @@ public class ReportDetailActivity extends Activity {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView avatar = text(p.optString("name", "?"), 17, Color.WHITE, true);
+        String name = p.optString("name", "").trim();
+        boolean unconfirmed = name.isEmpty() || name.startsWith("未确认")
+                || p.optString("status", "").contains("未确认");
+        String initial = unconfirmed ? "？" : new String(Character.toChars(name.codePointAt(0)));
+        TextView avatar = text(initial, 17, Color.WHITE, true);
         avatar.setGravity(Gravity.CENTER);
-        avatar.setBackground(round(personColor(p.optString("name")), 99));
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(38), dp(38));
+        avatar.setBackground(round(personColor(p.optString("name")), 14));
+        avatar.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(48), dp(48));
         alp.rightMargin = dp(10);
         top.addView(avatar, alp);
         LinearLayout names = new LinearLayout(this);
         names.setOrientation(LinearLayout.VERTICAL);
-        names.addView(text(p.optString("name", "?") + "  ·  " + p.optString("status", ""), 15, getColor(R.color.text_primary), true));
+        TextView nameView = text(name + "  ·  " + p.optString("status", ""), 15, getColor(R.color.text_primary), true);
+        nameView.setMaxLines(2);
+        nameView.setEllipsize(TextUtils.TruncateAt.END);
+        nameView.setContentDescription(name + "，" + p.optString("status", ""));
+        names.addView(nameView);
         names.addView(text(p.optString("turns", "0") + " 轮 · " + p.optString("talk", "0") + " min", 11, getColor(R.color.text_secondary), false));
-        top.addView(names);
+        top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         card.addView(top);
         TextView topics = text(p.optString("topics", ""), 11, getColor(R.color.brand), false);
         topics.setPadding(0, dp(7), 0, 0);
         card.addView(topics);
         addRoleLine(card, p);
         addSampleControls(card, p);
-        TextView open = text("只看 " + displayName(p.optString("name", "TA")) + " 说过的话 →", 11, getColor(R.color.brand), true);
+        TextView open = text("查看相关发言 →", 11, getColor(R.color.brand), true);
         open.setPadding(0, dp(6), 0, 0);
         card.addView(open);
         card.setOnClickListener(v -> openPerson(p.optString("name")));
+        card.setFocusable(true);
+        card.setMinimumHeight(dp(48));
         content.addView(card);
     }
 
@@ -466,16 +706,21 @@ public class ReportDetailActivity extends Activity {
         TextView who = text(person, 10, Color.WHITE, true);
         who.setGravity(Gravity.CENTER);
         who.setPadding(dp(6), dp(1), dp(6), dp(1));
-        who.setBackground(round(personColor(person), 5));
+        who.setBackground(round(personColor(person), 10));
+        who.setMaxLines(2);
+        who.setEllipsize(TextUtils.TruncateAt.END);
+        who.setMinHeight(dp(48));
+        who.setFocusable(true);
+        who.setContentDescription("查看" + person + "的发言");
         who.setOnClickListener(v -> openPerson(person));
-        head.addView(who);
+        head.addView(who, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView topic = text(u.optString("topic", ""), 10, getColor(R.color.text_secondary), false);
-        topic.setBackground(round(0xFFEEF3EF, 99));
+        topic.setBackground(round(getColor(R.color.surface_tint), 8));
         topic.setPadding(dp(7), dp(1), dp(7), dp(1));
         topic.setSingleLine(true);
         topic.setEllipsize(TextUtils.TruncateAt.END);
-        topic.setMaxWidth(dp(126));
+        topic.setMaxWidth(dp(80));
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         tlp.leftMargin = dp(6);
@@ -489,21 +734,27 @@ public class ReportDetailActivity extends Activity {
 
         TextView ctx = text("上下文", 10, getColor(R.color.brand), false);
         ctx.setGravity(Gravity.CENTER);
-        ctx.setBackground(round(0xFFF0F0EA, 6));
+        ctx.setBackground(round(getColor(R.color.neutral_light), 12));
         ctx.setPadding(dp(7), dp(2), dp(7), dp(2));
         ctx.setClickable(true);
+        ctx.setFocusable(true);
+        ctx.setMinHeight(dp(48));
+        ctx.setMinWidth(dp(48));
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         clp.leftMargin = dp(6);
         head.addView(ctx, clp);
         row.addView(head);
 
-        TextView body = text(u.optString("text", ""), 14, getColor(R.color.text_primary), false);
-        body.setPadding(0, dp(4), 0, 0);
-        body.setLineSpacing(dp(2), 1.0f);
+        TextView body = text(u.optString("text", ""), 16, getColor(R.color.text_primary), false);
+        body.setPadding(0, dp(10), 0, dp(8));
+        body.setLineSpacing(dp(5), 1.05f);
+        body.setTextIsSelectable(true);
         row.addView(body);
         ctx.setOnClickListener(v -> showContext(u));
         content.addView(row);
+        int utteranceId = u.optInt("id", -1);
+        if (utteranceId >= 0) utteranceRows.put(utteranceId, row);
     }
 
     private void showContext(JSONObject target) {
@@ -529,6 +780,10 @@ public class ReportDetailActivity extends Activity {
         titleRow.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView close = text("关闭", 12, getColor(R.color.brand), true);
         close.setPadding(dp(8), dp(6), 0, dp(6));
+        close.setMinHeight(dp(48));
+        close.setMinWidth(dp(64));
+        close.setGravity(Gravity.CENTER);
+        close.setFocusable(true);
         close.setOnClickListener(v -> dialog.dismiss());
         titleRow.addView(close);
         box.addView(titleRow);
@@ -544,14 +799,18 @@ public class ReportDetailActivity extends Activity {
             LinearLayout line = new LinearLayout(this);
             line.setOrientation(LinearLayout.HORIZONTAL);
             line.setPadding(dp(6), dp(5), dp(6), dp(5));
-            if (i == id) line.setBackground(round(0xFFFFEAB8, 6));
+            if (i == id) line.setBackground(round(getColor(R.color.accent), 10));
             TextView tm = text(u.optString("hm"), 10, getColor(R.color.text_tertiary), false);
             tm.setWidth(dp(54));
             line.addView(tm);
             TextView who = text(u.optString("person"), 10, Color.WHITE, true);
             who.setGravity(Gravity.CENTER);
             who.setPadding(dp(5), dp(1), dp(5), dp(1));
-            who.setBackground(round(personColor(u.optString("person")), 4));
+            who.setBackground(round(personColor(u.optString("person")), 8));
+            who.setMaxLines(2);
+            who.setMaxWidth(dp(96));
+            who.setEllipsize(TextUtils.TruncateAt.END);
+            who.setContentDescription(u.optString("person"));
             LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             wlp.rightMargin = dp(6);
@@ -599,15 +858,21 @@ public class ReportDetailActivity extends Activity {
 
         TextView play = text("▶ 听一段", 11, getColor(R.color.brand), true);
         play.setPadding(dp(9), dp(4), dp(9), dp(4));
-        play.setBackground(round(0xFFE8F0FE, 7));
+        play.setBackground(round(getColor(R.color.surface_tint), 12));
         play.setClickable(true);
+        play.setFocusable(true);
+        play.setMinHeight(dp(48));
+        play.setGravity(Gravity.CENTER);
         play.setOnClickListener(v -> playSample(sample, play));
         row.addView(play);
 
         TextView mark = text("标记姓名", 11, getColor(R.color.text_secondary), false);
         mark.setPadding(dp(9), dp(4), dp(9), dp(4));
-        mark.setBackground(round(0xFFF0F0EA, 7));
+        mark.setBackground(round(getColor(R.color.neutral_light), 12));
         mark.setClickable(true);
+        mark.setFocusable(true);
+        mark.setMinHeight(dp(48));
+        mark.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         mlp.leftMargin = dp(7);
@@ -628,6 +893,10 @@ public class ReportDetailActivity extends Activity {
     }
 
     private void playSample(JSONObject sample, TextView label) {
+        if (playingLabel == label && player != null) {
+            stopPlayer();
+            return;
+        }
         String job = sample.optString("job", "");
         if (job.isEmpty()) {
             label.setText("没有试听片段");
@@ -646,34 +915,40 @@ public class ReportDetailActivity extends Activity {
                 + "/clip?start=" + start + "&end=" + end;
         try {
             MediaPlayer mp = new MediaPlayer();
+            player = mp;
+            playingLabel = label;
             Map<String, String> headers = new HashMap<>();
             headers.put("Authorization", "Bearer " + token);
             mp.setDataSource(this, Uri.parse(url), headers);
-            player = mp;
             label.setText("正在加载…");
             mp.setOnPreparedListener(x -> {
+                if (player != x || isFinishing() || isDestroyed()) return;
                 x.start();
                 label.setText("■ 停止");
             });
             mp.setOnCompletionListener(x -> {
-                label.setText("▶ 听一段");
-                stopPlayer();
+                if (player == x) stopPlayer();
             });
             mp.setOnErrorListener((x, what, extra) -> {
-                label.setText("播放失败");
-                stopPlayer();
+                if (player == x) {
+                    stopPlayer();
+                    label.setText("重试播放");
+                    Toast.makeText(this, "试听需要连接电脑，请检查连接后重试", Toast.LENGTH_LONG).show();
+                }
                 return true;
             });
             mp.prepareAsync();
         } catch (Exception e) {
-            label.setText("播放失败");
             stopPlayer();
+            label.setText("重试播放");
         }
     }
 
     private void stopPlayer() {
         MediaPlayer p = player;
         player = null;
+        if (playingLabel != null) playingLabel.setText("▶ 听一段");
+        playingLabel = null;
         if (p != null) {
             try { p.stop(); } catch (Exception ignored) {}
             try { p.release(); } catch (Exception ignored) {}
@@ -702,7 +977,7 @@ public class ReportDetailActivity extends Activity {
         int n = 0;
         for (int i = 0; i < sessions.length(); i++) {
             JSONObject s = sessions.optJSONObject(i);
-            if (s != null && s.optInt("id", i) < 3) n++;
+            if (s != null) n++;
         }
         return n;
     }
@@ -752,12 +1027,14 @@ public class ReportDetailActivity extends Activity {
     }
 
     private void addSection(String title, String sub) {
-        TextView t = text(title, 17, getColor(R.color.text_primary), true);
-        t.setPadding(0, dp(18), 0, dp(2));
+        TextView t = text(title, 20, getColor(R.color.text_primary), true);
+        t.setAccessibilityHeading(true);
+        t.setPadding(0, content.getChildCount() == 0 ? 0 : dp(28), 0, dp(8));
         content.addView(t);
         if (sub != null && !sub.isEmpty()) {
-            TextView s = text(sub, 11, getColor(R.color.text_secondary), false);
-            s.setPadding(0, 0, 0, dp(7));
+            TextView s = text(sub, 13, getColor(R.color.text_secondary), false);
+            s.setPadding(0, 0, 0, dp(16));
+            s.setLineSpacing(dp(3), 1.0f);
             content.addView(s);
         }
     }
@@ -772,12 +1049,11 @@ public class ReportDetailActivity extends Activity {
     private LinearLayout card() {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        c.setPadding(dp(18), dp(18), dp(18), dp(18));
         c.setBackgroundResource(R.drawable.bg_card);
-        c.setElevation(dp(1));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(9);
+        lp.bottomMargin = dp(12);
         c.setLayoutParams(lp);
         return c;
     }
@@ -785,9 +1061,10 @@ public class ReportDetailActivity extends Activity {
     private TextView text(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s == null ? "" : s);
-        t.setTextSize(sp);
+        t.setTextSize(Math.max(12, sp));
         t.setTextColor(color);
         t.setIncludeFontPadding(false);
+        t.setLineSpacing(dp(2), 1.0f);
         if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         return t;
     }
@@ -800,9 +1077,8 @@ public class ReportDetailActivity extends Activity {
     }
 
     private int personColor(String p) {
-        if ("B".equals(p)) return 0xFF456B9C;
-        if ("C".equals(p)) return 0xFFA45D42;
-        return 0xFF2F6F5E;
+        return getColor(p != null && p.startsWith("未确认")
+                ? R.color.text_secondary : R.color.brand);
     }
 
     private String fmt(double v) {

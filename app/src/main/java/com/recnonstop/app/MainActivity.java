@@ -55,7 +55,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 主界面：录音 / 文件 / 日报 / 电脑 / 设置 五个分页。
+ * 主界面：录音 / 记录 / 日报，顶部进入电脑同步与设置。
  *
  * 旧界面把所有开关、按钮、状态和文件列表堆在一个 ScrollView 里，
  * 这里把主操作和低频设置拆开，所有反馈尽量留在界面内（底部面板 / 页面内提示），
@@ -76,6 +76,7 @@ public class MainActivity extends Activity {
     private static final int ATTENTION_BATTERY = 2;
     private static final int ATTENTION_AUTOSTART = 3;
     private static final int ATTENTION_DIAG = 4;
+    private static final int ATTENTION_STORAGE = 5;
 
     private static final ExecutorService FILES_EXEC = Executors.newSingleThreadExecutor();
 
@@ -86,6 +87,7 @@ public class MainActivity extends Activity {
     private ImageView[] navIcons;
     private TextView[] navLabels;
     private int currentTab = -1;
+    private int lastPrimaryTab = TAB_RECORDING;
     private int initialTab = TAB_RECORDING;
     private int initialFilter = 0;
 
@@ -101,6 +103,8 @@ public class MainActivity extends Activity {
     private ProgressBar segmentProgress;
     private FrameLayout recordButton;
     private ImageView recordIcon;
+    private TextView tvRecordAction;
+    private RecordingWaveformView recordingWaveform;
     private View pulseRing;
 
     private TextView tvStatSegments;
@@ -114,6 +118,7 @@ public class MainActivity extends Activity {
     private LinearLayout recentContainer;
 
     private TextView tvFilesSummary;
+    private TextView tvFilesRecordingHint;
     private LinearLayout filesContainer;
     private TextView btnLoadMore;
     private View btnRefreshFiles;
@@ -122,6 +127,10 @@ public class MainActivity extends Activity {
     private int fileFilter = 0;
     private int filesLimit = 30;
     private boolean filesLoaded = false;
+    private boolean filesLoading = false;
+    private boolean filesRefreshAgain = false;
+    private boolean filesRefreshFeedback = false;
+    private String filesError = "";
     private long filesSig = 0L;
     private int filesTotalCount = 0;
     private long filesTotalBytes = 0L;
@@ -210,6 +219,9 @@ public class MainActivity extends Activity {
             initialTab = Math.max(TAB_RECORDING,
                     Math.min(TAB_SETTINGS, savedInstanceState.getInt("tab", TAB_RECORDING)));
             initialFilter = savedInstanceState.getInt("file_filter", 0);
+            lastPrimaryTab = Math.max(TAB_RECORDING, Math.min(TAB_REPORT,
+                    savedInstanceState.getInt("primary_tab", TAB_RECORDING)));
+            currentReportId = savedInstanceState.getString("report_id", "");
         }
         setContentView(R.layout.activity_main);
 
@@ -264,6 +276,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        AudioPlayerSheet.dismissCurrent();
         handler.removeCallbacks(ticker);
         if (pulseAnimator != null) {
             pulseAnimator.cancel();
@@ -289,10 +302,16 @@ public class MainActivity extends Activity {
         super.onSaveInstanceState(outState);
         outState.putInt("tab", currentTab);
         outState.putInt("file_filter", fileFilter);
+        outState.putInt("primary_tab", lastPrimaryTab);
+        outState.putString("report_id", currentReportId);
     }
 
     @Override
     public void onBackPressed() {
+        if (currentTab >= TAB_PC) {
+            selectTab(lastPrimaryTab, true);
+            return;
+        }
         if (currentTab != TAB_RECORDING) {
             selectTab(TAB_RECORDING, true);
             return;
@@ -309,6 +328,7 @@ public class MainActivity extends Activity {
 
         heroDot = findViewById(R.id.heroDot);
         tvHeroStatus = findViewById(R.id.tvHeroStatus);
+        tvHeroStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         tvHeroBadge = findViewById(R.id.tvHeroBadge);
         tvHeroTime = findViewById(R.id.tvHeroTime);
         tvHeroHint = findViewById(R.id.tvHeroHint);
@@ -317,6 +337,8 @@ public class MainActivity extends Activity {
         segmentProgress = findViewById(R.id.segmentProgress);
         recordButton = findViewById(R.id.recordButton);
         recordIcon = findViewById(R.id.recordIcon);
+        tvRecordAction = findViewById(R.id.tvRecordAction);
+        recordingWaveform = findViewById(R.id.recordingWaveform);
         pulseRing = findViewById(R.id.pulseRing);
 
         tvStatSegments = findViewById(R.id.tvStatSegments);
@@ -328,6 +350,7 @@ public class MainActivity extends Activity {
         recentContainer = findViewById(R.id.recentContainer);
 
         tvFilesSummary = findViewById(R.id.tvFilesSummary);
+        tvFilesRecordingHint = findViewById(R.id.tvFilesRecordingHint);
         filesContainer = findViewById(R.id.filesContainer);
         btnLoadMore = findViewById(R.id.btnLoadMore);
         btnRefreshFiles = findViewById(R.id.btnRefreshFiles);
@@ -419,6 +442,10 @@ public class MainActivity extends Activity {
             navItems[i].setOnClickListener(v -> selectTab(tab, true));
             attachSwipe(pages[i]);
         }
+        findViewById(R.id.btnHeaderComputer).setOnClickListener(v ->
+                selectTab(currentTab == TAB_PC ? lastPrimaryTab : TAB_PC, true));
+        findViewById(R.id.btnHeaderSettings).setOnClickListener(v ->
+                selectTab(currentTab == TAB_SETTINGS ? lastPrimaryTab : TAB_SETTINGS, true));
         selectTab(initialTab, false);
     }
 
@@ -441,6 +468,9 @@ public class MainActivity extends Activity {
 
         int old = currentTab;
         currentTab = tab;
+        if (tab <= TAB_REPORT) lastPrimaryTab = tab;
+        findViewById(R.id.btnHeaderComputer).setSelected(tab == TAB_PC);
+        findViewById(R.id.btnHeaderSettings).setSelected(tab == TAB_SETTINGS);
         for (int i = 0; i < pages.length; i++) {
             boolean on = i == tab;
             View page = pages[i];
@@ -463,6 +493,7 @@ public class MainActivity extends Activity {
                 page.setTranslationX(0f);
             }
 
+            navItems[i].setSelected(on);
             navBoxes[i].setSelected(on);
             navLabels[i].setSelected(on);
             navIcons[i].setColorFilter(getColor(on ? R.color.brand : R.color.text_tertiary));
@@ -503,11 +534,11 @@ public class MainActivity extends Activity {
                                 || Math.abs(vx) < 650) {
                             return false;
                         }
-                        if (dx < 0 && currentTab < TAB_SETTINGS) {
+                        if (dx < 0 && currentTab < TAB_REPORT) {
                             selectTab(currentTab + 1, true);
                             return true;
                         }
-                        if (dx > 0 && currentTab > TAB_RECORDING) {
+                        if (dx > 0 && currentTab > TAB_RECORDING && currentTab <= TAB_REPORT) {
                             selectTab(currentTab - 1, true);
                             return true;
                         }
@@ -561,7 +592,6 @@ public class MainActivity extends Activity {
         findViewById(R.id.btnSeeAll).setOnClickListener(v -> selectTab(TAB_FILES, true));
 
         btnRefreshFiles.setOnClickListener(v -> {
-            btnRefreshFiles.animate().rotationBy(360f).setDuration(500).start();
             lastFilesMs = System.currentTimeMillis();
             refreshFiles(true);
         });
@@ -766,7 +796,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 文件页的本地批量清理：1 / 3 / 7 天前。只删手机本地文件。 */
+    /** 记录页的本地批量清理：1 / 3 / 7 天前。只删手机本地文件。 */
     private void showCleanupSheet() {
         final int[] days = {1, 3, 7};
         String[] labels = {"删除 1 天前", "删除 3 天前", "删除 7 天前"};
@@ -1011,6 +1041,10 @@ public class MainActivity extends Activity {
 
         String reportId = intent.getStringExtra("report_id");
         if (reportId != null && !reportId.isEmpty()) {
+            // A notification selects its report once; recreation must retain the
+            // version the reader subsequently chose.
+            intent.removeExtra("report_id");
+            currentReportId = reportId;
             skipAutoStart = true;
             selectTab(TAB_REPORT, true);
             handler.postDelayed(() -> showReport(reportId), 200);
@@ -1112,15 +1146,18 @@ public class MainActivity extends Activity {
 
     private void refreshReportPage(boolean fetch) {
         if (fetch) {
+            if (reportSyncing) return;
             if (!Settings.connected(this)) {
                 toast("先在「电脑」页连接电脑");
                 return;
             }
             lastReportSyncMs = System.currentTimeMillis();
             reportSyncing = true;
+            updateReportSyncState();
             DailyReports.syncHistory(this, (ok, msg) -> {
                 reportSyncing = false;
                 if (isFinishing() || isDestroyed()) return;
+                updateReportSyncState();
                 if (msg != null && !msg.isEmpty()) toast(msg);
                 loadReportList();
             });
@@ -1136,11 +1173,21 @@ public class MainActivity extends Activity {
         if (System.currentTimeMillis() - lastReportSyncMs < 60000) return;
         lastReportSyncMs = System.currentTimeMillis();
         reportSyncing = true;
+        updateReportSyncState();
         DailyReports.syncHistory(this, (ok, msg) -> {
             reportSyncing = false;
             if (isFinishing() || isDestroyed()) return;
+            updateReportSyncState();
             if (ok) loadReportList();
         });
+    }
+
+    private void updateReportSyncState() {
+        TextView refresh = findViewById(R.id.btnReportRefresh);
+        if (refresh == null) return;
+        refresh.setEnabled(!reportSyncing);
+        refresh.setText(reportSyncing ? "同步中…" : "同步");
+        refresh.setContentDescription(reportSyncing ? "正在同步日报" : "从电脑同步日报");
     }
 
     private void loadReportList() {
@@ -1166,6 +1213,20 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // 同一天的不同版本相邻展示，补生成旧日报不会打乱日期顺序。
+        list = new ArrayList<>(list);
+        list.sort((a, b) -> {
+            int byDate = reportDate(b).compareTo(reportDate(a));
+            if (byDate != 0) return byDate;
+            return b.optString("generated_at", "").compareTo(a.optString("generated_at", ""));
+        });
+        Map<String, Integer> versionsByDate = new HashMap<>();
+        for (JSONObject r : list) {
+            if (r.optString("id", "").isEmpty()) continue;
+            String date = reportDate(r);
+            versionsByDate.put(date, versionsByDate.getOrDefault(date, 0) + 1);
+        }
+
         JSONObject selected = null;
         for (JSONObject r : list) {
             String id = r.optString("id", "");
@@ -1184,11 +1245,18 @@ public class MainActivity extends Activity {
             if (id.isEmpty()) continue;
             TextView chip = new TextView(this);
             chip.setTag(id);
-            chip.setText(reportChipText(r));
+            boolean multipleVersions = versionsByDate.getOrDefault(reportDate(r), 0) > 1;
+            String generated = r.optString("generated_at", "");
+            String time = generated.length() >= 16 ? generated.substring(11, 16) : "时间未知";
+            chip.setText(reportChipText(r) + (multipleVersions ? "\n" + time : ""));
             chip.setBackgroundResource(R.drawable.bg_filter_chip);
             chip.setTextColor(getColorStateList(R.color.filter_text));
             chip.setTextSize(12);
             chip.setGravity(Gravity.CENTER);
+            chip.setMinHeight(dp(48));
+            chip.setContentDescription(reportDate(r) + "日报"
+                    + (multipleVersions ? "，" + formatReportTime(generated) + "生成" : "")
+                    + (DailyReports.isRead(this, id) ? "，已读" : "，未读"));
             chip.setPadding(dp(13), dp(6), dp(13), dp(6));
             chip.setSelected(id.equals(currentReportId));
             chip.setOnClickListener(v -> showReport(id));
@@ -1201,10 +1269,17 @@ public class MainActivity extends Activity {
     }
 
     private String reportChipText(JSONObject r) {
-        String date = r.optString("date", "");
+        String date = reportDate(r);
         if (date.length() >= 10) return date.substring(5);
         String title = r.optString("title", "日报");
         return title.length() > 6 ? title.substring(0, 6) : title;
+    }
+
+    private String reportDate(JSONObject r) {
+        String date = r.optString("date", "");
+        if (!date.isEmpty()) return date;
+        String generated = r.optString("generated_at", "");
+        return generated.length() >= 10 ? generated.substring(0, 10) : "";
     }
 
     private void showReport(String id) {
@@ -1214,7 +1289,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (r == null) {
-                    toast("日报不存在，点「刷新」试试");
+                    toast("日报尚未保存在手机，点「同步」重试下载");
                     loadReportList();
                     return;
                 }
@@ -1241,12 +1316,14 @@ public class MainActivity extends Activity {
         int count = r.optInt("job_count", 0);
         int minutes = (int) Math.round(r.optDouble("duration_seconds", 0) / 60.0);
         String meta = (generated.isEmpty() ? r.optString("date", "") : generated + " 生成")
-                + " · " + count + " 段 · " + minutes + " 分钟";
+                + " · " + count + " 段 · " + minutes + " 分钟\n已保存在手机，可离线阅读";
+        boolean incomplete = DailyReports.summaryIncomplete(r);
+        if (incomplete) meta += "\n汇总未完成 · 已保留分段材料";
         boolean hasDetail = r.optJSONObject("detail") != null;
         String rawContent = hasDetail ? r.optString("summary", "") : r.optString("content", r.optString("summary", ""));
-        String content = renderReportMarkdown(rawContent);
-        if (content.isEmpty()) {
-            content = r.optString("summary", "暂无内容");
+        CharSequence content = ReportMarkdown.render(this, rawContent);
+        if (content.length() == 0) {
+            content = ReportMarkdown.render(this, r.optString("summary", "暂无内容"));
         }
 
         tvReportTitle.setText(title);
@@ -1255,13 +1332,15 @@ public class MainActivity extends Activity {
         tvReportContent.setVisibility(View.VISIBLE);
         tvReportEmpty.setVisibility(View.GONE);
         if (btnReportDetail != null) {
-            btnReportDetail.setVisibility(hasDetail ? View.VISIBLE : View.GONE);
-            if (hasDetail) {
+            btnReportDetail.setVisibility(id.isEmpty() ? View.GONE : View.VISIBLE);
+            if (!id.isEmpty()) {
+                btnReportDetail.setText(incomplete ? "查看已保留的分段材料"
+                        : hasDetail ? "阅读日报与对话时间线" : "阅读完整日报");
                 btnReportDetail.setOnClickListener(v -> {
                     try {
                         startActivity(ReportDetailActivity.intent(this, id));
                     } catch (Exception e) {
-                        toast("打不开时间线：" + e.getMessage());
+                        toast("打不开日报：" + e.getMessage());
                     }
                 });
             }
@@ -1272,18 +1351,6 @@ public class MainActivity extends Activity {
     private String formatReportTime(String iso) {
         if (iso == null || iso.length() < 16) return iso == null ? "" : iso;
         return iso.substring(0, 10) + " " + iso.substring(11, 16);
-    }
-
-    /** 只做轻量 Markdown 清理：标题去 #、列表变圆点，保留原文顺序。 */
-    private String renderReportMarkdown(String md) {
-        if (md == null) return "";
-        String s = md.replace("\r\n", "\n").replace('\r', '\n').trim();
-        s = s.replaceAll("(?m)^#{1,6}\\s*", "");
-        s = s.replace("**", "").replace("__", "");
-        s = s.replaceAll("(?m)^[ \\t]*[-*]\\s+", "• ");
-        s = s.replaceAll("(?m)^[ \\t]*>\\s?", "");
-        s = s.replaceAll("\n{3,}", "\n\n");
-        return s.trim();
     }
 
     private void chooseReportTime() {
@@ -1361,10 +1428,14 @@ public class MainActivity extends Activity {
 
     private void onPcPrimary() {
         if (Settings.connected(this)) {
-            Settings.setBool(this, Settings.KEY_UPLOAD, true);
-            swUpload.setChecked(true);
-            Uploader.scanPendingAsync(this, true);
-            toast("开始同步未上传的录音");
+            RecState.uploadStatus = "正在检查未上传的录音…";
+            if (!swUpload.isChecked()) {
+                swUpload.setChecked(true);
+            } else {
+                Uploader.scanPendingAsync(this, true);
+                toast("正在检查未上传的录音");
+            }
+            refreshPcViews();
         } else {
             discoverPc();
         }
@@ -1533,7 +1604,7 @@ public class MainActivity extends Activity {
         if (now - lastInviteCheckMs < 1000) return;
         lastInviteCheckMs = now;
 
-        if (Sheet.isShowing()) return;
+        if (Sheet.isShowing() || AudioPlayerSheet.isShowing()) return;
         String raw = Settings.getString(this, Settings.KEY_PENDING_INVITE, "");
         if (raw == null || raw.isEmpty()) return;
         Settings.setString(this, Settings.KEY_PENDING_INVITE, "");
@@ -1596,87 +1667,138 @@ public class MainActivity extends Activity {
     }
 
     private void refreshFiles(boolean userInitiated) {
-        final int gen = ++filesGen;
-        if (userInitiated) {
-            tvFilesSummary.setText("正在刷新录音文件…");
+        filesRefreshFeedback |= userInitiated;
+        if (filesLoading) {
+            filesRefreshAgain = true;
+            return;
         }
+        filesLoading = true;
+        filesError = "";
+        final int gen = ++filesGen;
+        btnRefreshFiles.setEnabled(false);
+        btnRefreshFiles.setAlpha(0.4f);
+        btnRefreshFiles.setContentDescription("正在刷新文件列表");
+        updateFilesSummary();
 
         FILES_EXEC.execute(() -> {
-            File dir = RecorderService.recDirOf(MainActivity.this);
-            File[] list = dir.listFiles((d, n) -> n.endsWith(".aac") || n.endsWith(".m4a"));
-            if (list == null) list = new File[0];
-            Arrays.sort(list, (a, b) -> {
-                int byTime = Long.compare(b.lastModified(), a.lastModified());
-                return byTime != 0 ? byTime : b.getName().compareTo(a.getName());
-            });
-
-            long total = 0L;
-            for (File f : list) total += f.length();
-
-            UploadStore store = UploadStore.get(MainActivity.this);
-            Set<String> uploaded = store.uploadedNames();
-            Set<String> pending = store.pendingNames();
-            Map<String, String> sums = new HashMap<>();
-            for (UploadStore.SummaryRow row : store.recentSummaries(300)) {
-                if (row.summary != null && !row.summary.isEmpty()) {
-                    sums.put(row.name, row.summary);
+            try {
+                File dir = RecorderService.recDirOf(MainActivity.this);
+                File[] list = dir.listFiles((d, n) -> n.endsWith(".aac") || n.endsWith(".m4a"));
+                if (list == null) {
+                    if (!dir.exists()) list = new File[0];
+                    else throw new java.io.IOException("无法读取录音目录");
                 }
-            }
+                Arrays.sort(list, (a, b) -> {
+                    int byTime = Long.compare(b.lastModified(), a.lastModified());
+                    return byTime != 0 ? byTime : b.getName().compareTo(a.getName());
+                });
 
-            List<FileItem> items = new ArrayList<>();
-            int pendingCount = 0;
-            long sig = 17L;
-            for (File f : list) {
-                String name = f.getName();
-                String state = uploaded.contains(name)
-                        ? "uploaded"
-                        : pending.contains(name) ? "pending" : "";
-                String summary = sums.get(name);
-                if (summary == null) summary = "";
-                FileItem item = new FileItem(f, name, f.length(), f.lastModified(), state, summary);
-                items.add(item);
-                if (item.pending()) pendingCount++;
+                long total = 0L;
+                for (File f : list) total += f.length();
 
-                sig = sig * 31 + name.hashCode();
-                sig = sig * 31 + item.size;
-                sig = sig * 31 + item.modified;
-                sig = sig * 31 + state.hashCode();
-                sig = sig * 31 + summary.hashCode();
-            }
-
-            final long finalSig = sig;
-            final List<FileItem> snapshot = items;
-            final int finalPending = pendingCount;
-            final long finalTotal = total;
-            final int finalCount = list.length;
-
-            runOnUiThread(() -> {
-                if (gen != filesGen || isFinishing() || isDestroyed()) return;
-                filesTotalCount = finalCount;
-                filesTotalBytes = finalTotal;
-                filesPendingCount = finalPending;
-                filesLoaded = true;
-                boolean changed = finalSig != filesSig;
-                filesSig = finalSig;
-                filesCache.clear();
-                filesCache.addAll(snapshot);
-                updateFilesSummary();
-                if (changed) {
-                    renderFiles();
-                    renderRecent();
+                UploadStore store = UploadStore.get(MainActivity.this);
+                Set<String> uploaded = store.uploadedNames();
+                Set<String> pending = store.pendingNames();
+                Map<String, String> sums = new HashMap<>();
+                for (UploadStore.SummaryRow row : store.recentSummaries(300)) {
+                    if (row.summary != null && !row.summary.isEmpty()) {
+                        sums.put(row.name, row.summary);
+                    }
                 }
-            });
+
+                List<FileItem> items = new ArrayList<>();
+                int pendingCount = 0;
+                long sig = 17L;
+                for (File f : list) {
+                    String name = f.getName();
+                    String state = uploaded.contains(name)
+                            ? "uploaded"
+                            : pending.contains(name) ? "pending" : "";
+                    String summary = sums.get(name);
+                    if (summary == null) summary = "";
+                    FileItem item = new FileItem(f, name, f.length(), f.lastModified(), state, summary);
+                    items.add(item);
+                    if (!item.uploaded()) pendingCount++;
+
+                    sig = sig * 31 + name.hashCode();
+                    sig = sig * 31 + item.size;
+                    sig = sig * 31 + item.modified;
+                    sig = sig * 31 + state.hashCode();
+                    sig = sig * 31 + summary.hashCode();
+                }
+
+                final long finalSig = sig;
+                final List<FileItem> snapshot = items;
+                final int finalPending = pendingCount;
+                final long finalTotal = total;
+                final int finalCount = list.length;
+
+                runOnUiThread(() -> {
+                    if (gen != filesGen || isFinishing() || isDestroyed()) return;
+                    filesTotalCount = finalCount;
+                    filesTotalBytes = finalTotal;
+                    filesPendingCount = finalPending;
+                    boolean firstLoad = !filesLoaded;
+                    filesLoaded = true;
+                    boolean changed = firstLoad || finalSig != filesSig;
+                    filesSig = finalSig;
+                    filesCache.clear();
+                    filesCache.addAll(snapshot);
+                    finishFilesRefresh();
+                    if (changed) {
+                        renderFiles();
+                        renderRecent();
+                    }
+                    if (filesRefreshFeedback && !filesLoading) {
+                        filesRefreshFeedback = false;
+                        toast("已更新 · 共 " + finalCount + " 段录音");
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (gen != filesGen || isFinishing() || isDestroyed()) return;
+                    String message = "暂时无法读取录音，点刷新重试";
+                    filesError = message;
+                    finishFilesRefresh();
+                    if (!filesLoaded) renderFiles();
+                    if (filesRefreshFeedback) {
+                        filesRefreshFeedback = false;
+                        toast(message);
+                    }
+                });
+            }
         });
+    }
+
+    private void finishFilesRefresh() {
+        filesLoading = false;
+        btnRefreshFiles.setEnabled(true);
+        btnRefreshFiles.setAlpha(1f);
+        btnRefreshFiles.setContentDescription("刷新文件列表");
+        updateFilesSummary();
+        if (filesRefreshAgain) {
+            filesRefreshAgain = false;
+            refreshFiles(false);
+        }
     }
 
     private void updateFilesSummary() {
         if (tvFilesSummary == null) return;
+        if (!filesError.isEmpty()) {
+            tvFilesSummary.setText(filesError);
+            return;
+        }
+        if (filesLoading) {
+            tvFilesSummary.setText(filesLoaded ? "正在更新 · 已有 " + filesTotalCount + " 段录音"
+                    : "正在读取录音文件…");
+            return;
+        }
         if (!filesLoaded) {
             tvFilesSummary.setText("正在读取录音文件…");
             return;
         }
         if (filesTotalCount == 0) {
-            tvFilesSummary.setText("还没有录音文件");
+            tvFilesSummary.setText(RecState.running ? "当前分段保存后会出现在这里" : "还没有录音文件");
             return;
         }
         int keep = Settings.getInt(this, Settings.KEY_KEEP_DAYS, 7);
@@ -1684,7 +1806,7 @@ public class MainActivity extends Activity {
         String text = "共 " + filesTotalCount + " 段 · " + size(filesTotalBytes)
                 + " · " + keepText;
         if (filesPendingCount > 0) {
-            text += " · 待上传 " + filesPendingCount + " 段";
+            text += " · 未上传 " + filesPendingCount + " 段";
         }
         tvFilesSummary.setText(text);
     }
@@ -1694,31 +1816,54 @@ public class MainActivity extends Activity {
         filesContainer.removeAllViews();
 
         if (!filesLoaded) {
-            addEmpty(filesContainer, R.drawable.ic_refresh, "正在读取录音…", "稍等一下");
+            addEmpty(filesContainer, R.drawable.ic_refresh,
+                    filesError.isEmpty() ? "正在读取录音…" : "录音列表暂不可用",
+                    filesError.isEmpty() ? "稍等一下" : "已有录音不会受影响，点右上角刷新重试");
             btnLoadMore.setVisibility(View.GONE);
             return;
         }
 
         List<FileItem> filtered = filteredFiles();
+        int today = 0;
+        for (FileItem item : filesCache) if (isToday(item.modified)) today++;
+        filterChips[0].setText("全部 " + filesTotalCount);
+        filterChips[1].setText("今天 " + today);
+        filterChips[2].setText("未上传 " + filesPendingCount);
         if (filtered.isEmpty()) {
             if (fileFilter == 1) {
                 addEmpty(filesContainer, R.drawable.ic_clock, "今天还没有录音",
-                        "开始录音后，这里会显示今天的文件");
+                        RecState.running ? "当前分段保存后会出现在这里" : "开始录音后，这里会显示今天的文件");
             } else if (fileFilter == 2) {
-                addEmpty(filesContainer, R.drawable.ic_check_circle, "没有待上传的录音",
-                        "所有录音都已同步，或还没有开始录音");
+                addEmpty(filesContainer, R.drawable.ic_check_circle, "没有未上传的录音",
+                        filesTotalCount > 0 ? "已保存的录音都已上传到电脑" : "当前还没有已保存的录音");
             } else {
                 addEmpty(filesContainer, R.drawable.ic_mic, "还没有录音文件",
-                        "点「录音」开始第一段");
+                        RecState.running ? "当前分段保存后即可播放" : "点「录音」开始第一段");
             }
             btnLoadMore.setVisibility(View.GONE);
             return;
         }
 
         int limit = Math.min(filesLimit, filtered.size());
+        String previousDay = "";
+        SimpleDateFormat dayFormat = new SimpleDateFormat("yyyy年M月d日", Locale.CHINA);
         for (int i = 0; i < limit; i++) {
-            if (i > 0) addDivider(filesContainer, 68);
-            bindFileRow(filesContainer, filtered.get(i));
+            FileItem item = filtered.get(i);
+            String day = dayFormat.format(new Date(item.modified));
+            if (!day.equals(previousDay)) {
+                TextView heading = new TextView(this);
+                heading.setText(isToday(item.modified) ? "今天 · " + day : day);
+                heading.setTextSize(12);
+                heading.setTextColor(getColor(R.color.text_secondary));
+                heading.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+                heading.setPadding(dp(16), dp(i == 0 ? 16 : 24), dp(16), dp(8));
+                heading.setAccessibilityHeading(true);
+                filesContainer.addView(heading);
+                previousDay = day;
+            } else {
+                addDivider(filesContainer, 36);
+            }
+            bindFileRow(filesContainer, item);
         }
 
         if (filtered.size() > limit) {
@@ -1733,7 +1878,7 @@ public class MainActivity extends Activity {
         List<FileItem> out = new ArrayList<>();
         for (FileItem item : filesCache) {
             if (fileFilter == 1 && !isToday(item.modified)) continue;
-            if (fileFilter == 2 && !item.pending()) continue;
+            if (fileFilter == 2 && item.uploaded()) continue;
             out.add(item);
         }
         return out;
@@ -1747,8 +1892,9 @@ public class MainActivity extends Activity {
         TextView state = row.findViewById(R.id.tvFileState);
         View play = row.findViewById(R.id.btnQuickPlay);
 
-        name.setText(friendlyDate(item.modified));
-        meta.setText(size(item.size) + " · AAC");
+        name.setText(new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date(item.modified)));
+        meta.setText(size(item.size) + (item.name.endsWith(".m4a") ? " · M4A" : " · AAC"));
+        play.setContentDescription("播放 " + friendlyDate(item.modified));
         if (item.summary == null || item.summary.isEmpty()) {
             summary.setVisibility(View.GONE);
         } else {
@@ -1777,7 +1923,7 @@ public class MainActivity extends Activity {
 
         int show = Math.min(filesCache.size(), 3);
         for (int i = 0; i < show; i++) {
-            if (i > 0) addDivider(recentContainer, 62);
+            if (i > 0) addDivider(recentContainer, 28);
             FileItem item = filesCache.get(i);
             View row = LayoutInflater.from(this).inflate(R.layout.item_recent_row, recentContainer, false);
             TextView name = row.findViewById(R.id.tvRecentName);
@@ -1844,7 +1990,7 @@ public class MainActivity extends Activity {
                     getColor(R.color.brand),
                     () -> TranscriptDialog.show(this, jobId, friendlyDate(item.modified), () -> refreshFiles(false))));
         }
-        actions.add(act(R.drawable.ic_play, "播放", "用系统播放器打开这一段",
+        actions.add(act(R.drawable.ic_play, "播放", "在应用内试听这一段",
                 getColor(R.color.brand), () -> playFile(item.file)));
         actions.add(act(R.drawable.ic_share, "分享", "发送给其他应用",
                 getColor(R.color.text_secondary), () -> shareFile(item.file)));
@@ -1879,15 +2025,7 @@ public class MainActivity extends Activity {
     }
 
     private void playFile(File f) {
-        try {
-            Uri uri = RecFileProvider.uriForRec(f);
-            Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(uri, "audio/*");
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(i);
-        } catch (Exception e) {
-            toast("无法播放：这台手机没有能打开 AAC 的应用");
-        }
+        AudioPlayerSheet.show(this, f);
     }
 
     private void shareFile(File f) {
@@ -1915,7 +2053,7 @@ public class MainActivity extends Activity {
         Sheet.show(this, "录音保存位置",
                 dir.getAbsolutePath()
                         + "\n\n用数据线连电脑后，可在 Android/data/com.recnonstop.app/files/rec 里找到。"
-                        + "\n也可以直接在「文件」页点一段播放或分享。",
+                        + "\n也可以直接在「记录」页点一段播放或分享。",
                 actions);
     }
 
@@ -1975,17 +2113,16 @@ public class MainActivity extends Activity {
     private void refreshHero() {
         long now = System.currentTimeMillis();
 
-        if (awaitingStart && RecState.running) {
+        if (awaitingStart && RecState.running && !recordingWaiting()) {
             awaitingStart = false;
-            toast("已开始录音");
-        } else if (awaitingStart && !RecState.running
-                && now - startRequestMs > 8000) {
+            toast(RecState.paused ? "通话结束后会自动开始录音" : "已开始录音");
+        } else if (awaitingStart && now - startRequestMs > 8000) {
             awaitingStart = false;
-            toast("启动超时，请检查麦克风或通知权限");
+            toast(RecState.running ? "暂未开始录音，正在自动重试" : "启动超时，请检查麦克风或通知权限");
         }
         if (awaitingStop && !RecState.running) {
             awaitingStop = false;
-            toast("录音已停止，本段已保存");
+            toast("录音已停止，可在记录页查看已保存分段");
             lastFilesMs = now;
             refreshFiles(false);
         } else if (awaitingStop && now - stopRequestMs > 8000) {
@@ -1996,6 +2133,11 @@ public class MainActivity extends Activity {
         boolean running = RecState.running;
         boolean paused = running && RecState.paused;
         boolean low = running && RecState.lowLevel;
+        boolean waiting = recordingWaiting();
+        tvFilesRecordingHint.setVisibility(running ? View.VISIBLE : View.GONE);
+        tvFilesRecordingHint.setText(waiting || paused
+                ? "录音暂时暂停，已保存的分段仍可播放。"
+                : "当前分段正在录制，保存后会出现在列表中。");
 
         if (running) {
             long pausedMs = RecState.pausedTotalMs;
@@ -2012,7 +2154,27 @@ public class MainActivity extends Activity {
             int progress = segMax > 0
                     ? (int) Math.min(100L, segMs * 100L / segMax) : 0;
 
-            if (paused) {
+            if (awaitingStop) {
+                tvHeroStatus.setText("正在停止…");
+                tvHeroHint.setText("正在保存当前分段");
+                tvSegmentInfo.setText("请稍候");
+                segmentProgress.setProgress(0);
+                heroDot.setBackgroundResource(R.drawable.bg_dot_amber);
+                tvHeroSub.setText("保存后可在记录页查看");
+            } else if (waiting) {
+                boolean storage = recordingStorageBlocked();
+                boolean hasError = RecState.lastError != null && !RecState.lastError.isEmpty();
+                tvHeroStatus.setText(storage ? "空间不足 · 已暂停"
+                        : hasError ? "等待恢复录音" : "准备录音");
+                tvHeroTime.setText("--:--:--");
+                tvHeroHint.setText("当前未录音");
+                tvSegmentInfo.setText(storage ? "腾出空间后自动继续" : "正在打开麦克风");
+                segmentProgress.setProgress(0);
+                heroDot.setBackgroundResource(R.drawable.bg_dot_amber);
+                tvHeroSub.setText(storage ? "去记录页清理已备份的旧录音"
+                        : hasError ? "请检查麦克风权限，或结束其他应用的录音"
+                        : "准备完成后自动继续，请稍候");
+            } else if (paused) {
                 tvHeroStatus.setText("通话中，已暂停");
                 tvHeroHint.setText("挂断后自动继续录音");
                 tvSegmentInfo.setText("通话暂停中 · 挂断后开始新段");
@@ -2025,20 +2187,20 @@ public class MainActivity extends Activity {
                 tvSegmentInfo.setText("本段 " + fmt(segMs) + " / " + fmt(segMax));
                 segmentProgress.setProgress(progress);
                 heroDot.setBackgroundResource(R.drawable.bg_dot_amber);
-                tvHeroSub.setText("已切段 " + RecState.segmentCount + " 段 · 来电自动暂停");
+                tvHeroSub.setText("本次第 " + RecState.segmentCount + " 段 · 来电自动暂停");
             } else {
                 tvHeroStatus.setText("录音中");
-                tvHeroHint.setText("本次录音总时长");
+                tvHeroHint.setText("本次会话时长");
                 tvSegmentInfo.setText("本段 " + fmt(segMs) + " / " + fmt(segMax));
                 segmentProgress.setProgress(progress);
                 heroDot.setBackgroundResource(R.drawable.bg_dot_green);
-                tvHeroSub.setText("已切段 " + RecState.segmentCount + " 段 · 来电自动暂停");
+                tvHeroSub.setText("本次第 " + RecState.segmentCount + " 段 · 来电自动暂停");
             }
             recordIcon.setImageResource(R.drawable.ic_stop);
             recordIcon.setColorFilter(getColor(R.color.danger));
             recordButton.setContentDescription("停止录音");
-            setRecordPulse(!paused);
-            setDotPulse(!paused);
+            setRecordPulse(false);
+            setDotPulse(!paused && !waiting && !awaitingStop);
         } else if (awaitingStart) {
             tvHeroStatus.setText("正在启动…");
             tvHeroHint.setText("正在打开麦克风");
@@ -2066,7 +2228,7 @@ public class MainActivity extends Activity {
             setDotPulse(false);
         } else {
             tvHeroStatus.setText("待机中");
-            tvHeroHint.setText("点右侧按钮开始录音");
+            tvHeroHint.setText("按下开始，记录此刻");
             tvHeroTime.setText("00:00:00");
             tvSegmentInfo.setText("分段保存 · 每 " + Settings.getInt(this, Settings.KEY_SEGMENT_MIN, 3) + " 分钟一段");
             segmentProgress.setProgress(0);
@@ -2080,12 +2242,24 @@ public class MainActivity extends Activity {
             setRecordPulse(false);
             setDotPulse(false);
         }
+        String action = awaitingStop ? "正在保存…" : awaitingStart ? "正在启动…"
+                : running ? "停止录音" : "开始录音";
+        tvRecordAction.setText(action);
+        recordButton.setContentDescription(action);
+        recordButton.setEnabled(!awaitingStart && !awaitingStop);
+        recordButton.setAlpha(awaitingStart || awaitingStop ? .65f : 1f);
+        recordingWaveform.update(running && !paused && !waiting && !awaitingStop);
     }
 
     private void refreshTopChip() {
-        if (RecState.running) {
+        if (awaitingStop) {
+            setTopChip("停止中", R.drawable.bg_chip_amber, R.color.warning);
+        } else if (RecState.running) {
             if (RecState.paused) {
                 setTopChip("通话暂停", R.drawable.bg_chip_amber, R.color.warning);
+            } else if (recordingWaiting()) {
+                setTopChip(recordingStorageBlocked() ? "空间不足" : "等待录音",
+                        R.drawable.bg_chip_amber, R.color.warning);
             } else if (RecState.lowLevel) {
                 setTopChip("音量偏低", R.drawable.bg_chip_amber, R.color.warning);
             } else {
@@ -2093,11 +2267,19 @@ public class MainActivity extends Activity {
             }
         } else if (awaitingStart) {
             setTopChip("启动中", R.drawable.bg_chip_blue, R.color.brand);
-        } else if (awaitingStop) {
-            setTopChip("停止中", R.drawable.bg_chip_amber, R.color.warning);
         } else {
             setTopChip("待机", R.drawable.bg_chip_gray, R.color.text_secondary);
         }
+    }
+
+    private static boolean recordingWaiting() {
+        return RecState.running && !RecState.paused
+                && (RecState.currentFile == null || RecState.currentFile.isEmpty());
+    }
+
+    private static boolean recordingStorageBlocked() {
+        return recordingWaiting() && RecState.lastError != null
+                && RecState.lastError.contains("存储空间不足");
     }
 
     private void setTopChip(String text, int background, int color) {
@@ -2127,6 +2309,14 @@ public class MainActivity extends Activity {
             action = ATTENTION_PERMISSION;
             title = "缺少麦克风权限";
             desc = "点此去系统设置授权，否则无法录音";
+        } else if (recordingStorageBlocked()) {
+            action = ATTENTION_STORAGE;
+            title = "空间不足，当前没有录音";
+            desc = "点此查看文件，清理已备份的旧录音后会自动继续";
+        } else if (recordingWaiting() && !RecState.lastError.isEmpty()) {
+            action = ATTENTION_DIAG;
+            title = "录音暂时中断，正在重试";
+            desc = "检查麦克风是否被占用 · 点此导出诊断日志";
         } else if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -2136,7 +2326,7 @@ public class MainActivity extends Activity {
         } else if (!batteryIgnored()) {
             action = ATTENTION_BATTERY;
             title = "后台可能被系统杀掉";
-            desc = "点此关闭电池优化，保证锁屏继续录音";
+            desc = "点此关闭电池优化，提高锁屏录音稳定性";
         } else {
             SharedPreferences sp = getSharedPreferences(RecorderService.PREFS, MODE_PRIVATE);
             JSONObject h = health();
@@ -2176,6 +2366,9 @@ public class MainActivity extends Activity {
             case ATTENTION_DIAG:
                 exportDiag();
                 break;
+            case ATTENTION_STORAGE:
+                selectTab(TAB_FILES, true);
+                break;
             default:
                 break;
         }
@@ -2184,18 +2377,20 @@ public class MainActivity extends Activity {
     private void refreshPcViews() {
         if (tvPcTitle == null) return;
         boolean connected = Settings.connected(this);
-        String token = Settings.getString(this, Settings.KEY_TOKEN, "");
         String pcName = Settings.getString(this, Settings.KEY_PC_NAME, "");
         boolean upload = Settings.getBool(this, Settings.KEY_UPLOAD, false);
         int[] counts = counts();
         int failed = counts[2] + counts[3];
+        String us = RecState.uploadStatus == null ? "" : RecState.uploadStatus;
+        boolean sending = us.startsWith("上传中") || us.startsWith("排队上传");
+        boolean analyzing = us.startsWith("分析中") || us.startsWith("已上传，分析");
 
         if (connected) {
-            tvPcTitle.setText(pcName == null || pcName.isEmpty() ? "已连接电脑" : "已连接：" + pcName);
+            tvPcTitle.setText(pcName == null || pcName.isEmpty() ? "我的电脑" : pcName);
             tvPcSub.setText(Settings.getPcUrl(this));
         } else {
             tvPcTitle.setText("未连接电脑");
-            tvPcSub.setText("连接后自动同步已关闭的录音段");
+            tvPcSub.setText("配对后可自动同步已保存的录音");
         }
 
         if (!connected) {
@@ -2206,31 +2401,25 @@ public class MainActivity extends Activity {
             tvPcBadge.setText("已暂停");
             tvPcBadge.setBackgroundResource(R.drawable.bg_chip_amber);
             tvPcBadge.setTextColor(getColor(R.color.warning));
-        } else if (failed > 0) {
-            tvPcBadge.setText("同步异常");
+        } else if (sending || analyzing) {
+            tvPcBadge.setText(sending ? "同步中" : "分析中");
+            tvPcBadge.setBackgroundResource(R.drawable.bg_chip_blue);
+            tvPcBadge.setTextColor(getColor(R.color.brand));
+        } else if (failed > 0 || us.contains("失败") || us.contains("失效")) {
+            tvPcBadge.setText(counts[3] > 0 ? "需检查" : "待重试");
             tvPcBadge.setBackgroundResource(R.drawable.bg_chip_amber);
             tvPcBadge.setTextColor(getColor(R.color.warning));
         } else {
-            tvPcBadge.setText("已连接");
-            tvPcBadge.setBackgroundResource(R.drawable.bg_chip_green);
-            tvPcBadge.setTextColor(getColor(R.color.success));
+            tvPcBadge.setText("已配对");
+            tvPcBadge.setBackgroundResource(R.drawable.bg_chip_gray);
+            tvPcBadge.setTextColor(getColor(R.color.text_secondary));
         }
 
-        String us = RecState.uploadStatus;
-        if (token == null || token.isEmpty()) {
-            us = "未连接电脑";
-        } else if (us == null || us.isEmpty()) {
-            us = upload ? "等待上传" : "自动上传已关闭";
-        }
-        if (connected && failed > 0
-                && ("等待上传".equals(us) || "自动上传已关闭".equals(us))) {
-            us += " · 有 " + failed + " 段失败，可点「立即同步」重试";
-        }
-        tvPcStatus.setText("上传状态：" + us);
+        tvPcStatus.setText(syncStatusText(connected, upload, us, failed));
 
         tvPcStats.setVisibility(connected ? View.VISIBLE : View.GONE);
-        String stats = "已上传 " + counts[0] + " 段 · 待传 " + counts[1] + " 段";
-        if (failed > 0) stats += " · 失败 " + failed + " 段";
+        String stats = "已上传 " + counts[0] + " 段 · 待上传 " + (counts[1] + counts[2]) + " 段";
+        if (counts[3] > 0) stats += " · 需检查 " + counts[3] + " 段";
         tvPcStats.setText(stats);
 
         String summary = RecState.lastSummary;
@@ -2241,8 +2430,28 @@ public class MainActivity extends Activity {
             tvPcSummary.setVisibility(View.GONE);
         }
 
-        btnPcAction.setText(connected ? "立即同步" : "发现电脑");
+        btnPcAction.setText(!connected ? "发现电脑" : upload ? "立即同步" : "开启同步");
         btnManualPair.setText(connected ? "修改电脑地址" : "手动输入电脑地址");
+    }
+
+    private static String syncStatusText(boolean connected, boolean upload, String status, int failed) {
+        if (!connected) return "先连接你的电脑，录音会继续保存在手机。";
+        if (!upload) return "自动同步已暂停，新的录音仍会保存在手机。";
+        if (status.contains("失效") || status.contains("401")) return "连接授权已失效，请重新连接电脑。";
+        if (status.contains("队列已满")) return "电脑正在处理积压录音，稍后会自动重试上传。";
+        if (status.startsWith("文件无法上传")) return "有录音未被电脑接收，可在记录页查看并重试同步。";
+        if (status.startsWith("等待 Wi-Fi")) return "等待 Wi-Fi，连接后会自动上传已保存的录音。";
+        if (status.startsWith("上传中") || status.startsWith("排队上传")) return "正在同步已保存的录音，当前录音不会中断。";
+        if (status.startsWith("分析中") || status.startsWith("已上传，分析")) return "录音已上传，电脑正在生成转写和摘要。";
+        if (status.startsWith("分析完成")) return "最近一段分析完成，可在记录页查看转写。";
+        if (status.startsWith("分析失败")) return "电脑分析未完成，已上传的录音仍然保留。";
+        if (status.startsWith("电脑连接正常")) return "电脑服务可访问，可以开始同步录音。";
+        if (status.contains("失败") || status.contains("任务丢失") || failed > 0) {
+            return "有录音等待重试。请确认电脑已启动且网络可达，连接恢复后会自动补传。";
+        }
+        if (status.startsWith("测试连接")) return "正在检查电脑是否可访问…";
+        if (status.startsWith("正在检查")) return status;
+        return "已开启自动同步，当前分段保存后会上传到电脑。";
     }
 
     private JSONObject health() {

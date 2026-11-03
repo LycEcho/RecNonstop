@@ -85,7 +85,7 @@ final class PcApi {
                     finish(cb, null, obj.optString("error", "HTTP " + code));
                     return;
                 }
-                finish(cb, obj, "");
+                finish(cb, obj, null);
             } catch (Exception e) {
                 String msg = e.getMessage();
                 finish(cb, null, msg == null || msg.isEmpty() ? "连接电脑失败" : msg);

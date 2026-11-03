@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_sheet"
+    android:fillViewport="false"
+    android:scrollbars="none">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_sheet"
+        android:orientation="vertical"
+        android:paddingStart="24dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="24dp">
+    
+        <View
+            android:layout_width="32dp"
+            android:layout_height="4dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="12dp"
+            android:background="@drawable/bg_sheet_handle" />
+    
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+    
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="录音试听"
+                android:textColor="@color/text_primary"
+                android:textSize="20sp" />
+    
+            <TextView
+                android:id="@+id/playerClose"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
+                android:contentDescription="关闭播放并停止声音"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="关闭"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+    
+        <TextView
+            android:id="@+id/playerFilename"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="middle"
+            android:maxLines="2"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    
+        <TextView
+            android:id="@+id/playerRecordingNote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_summary"
+            android:lineSpacingExtra="2dp"
+            android:padding="12dp"
+            android:text="录音任务仍开启，建议戴上耳机试听，避免外放声音再次录入。"
+            android:textColor="@color/brand"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    
+        <TextView
+            android:id="@+id/playerStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:accessibilityLiveRegion="polite"
+            android:gravity="center"
+            android:text="正在读取录音…"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    
+        <SeekBar
+            android:id="@+id/playerSeek"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:contentDescription="播放进度"
+            android:enabled="false"
+            android:max="1000"
+            android:progressTint="@color/brand"
+            android:thumbTint="@color/brand" />
+    
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+    
+            <TextView
+                android:id="@+id/playerElapsed"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:text="00:00"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+    
+            <TextView
+                android:id="@+id/playerDuration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="--:--"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+        </LinearLayout>
+    
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="24dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+    
+            <TextView
+                android:id="@+id/playerBack"
+                android:layout_width="64dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
+                android:contentDescription="后退十五秒"
+                android:enabled="false"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="−15 秒"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+    
+            <TextView
+                android:id="@+id/playerToggle"
+                style="@style/PrimaryButton"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_marginStart="12dp"
+                android:layout_marginEnd="12dp"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:enabled="false"
+                android:focusable="true"
+                android:text="读取中…" />
+    
+            <TextView
+                android:id="@+id/playerForward"
+                android:layout_width="64dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
+                android:contentDescription="前进十五秒"
+                android:enabled="false"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="+15 秒"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

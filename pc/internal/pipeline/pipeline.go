@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -29,6 +30,8 @@ type Pipeline struct {
 	Backend  map[string]string
 
 	queue    chan task
+	ctx      context.Context
+	cancel   context.CancelFunc
 	timeout  time.Duration
 	retries  int
 	wg       sync.WaitGroup
@@ -49,6 +52,7 @@ func New(asr infer.ASR, analyzer infer.Analyzer, store *job.Store, mode string,
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pipeline{
 		ASR:      asr,
 		Analyzer: analyzer,
@@ -56,6 +60,8 @@ func New(asr infer.ASR, analyzer infer.Analyzer, store *job.Store, mode string,
 		Mode:     mode,
 		Backend:  backend,
 		queue:    make(chan task, queueSize),
+		ctx:      ctx,
+		cancel:   cancel,
 		timeout:  timeout,
 		retries:  2,
 		inFlight: map[string]bool{},
@@ -70,11 +76,14 @@ func New(asr infer.ASR, analyzer infer.Analyzer, store *job.Store, mode string,
 func (p *Pipeline) worker(id int) {
 	defer p.wg.Done()
 	for t := range p.queue {
+		if p.ctx.Err() != nil {
+			return // Unstarted jobs remain queued in the store for restart.
+		}
 		p.mu.Lock()
 		delete(p.inFlight, t.jobID)
 		p.mu.Unlock()
 		p.active.Add(1)
-		p.Run(context.Background(), t.jobID, t.audioPath)
+		p.Run(p.ctx, t.jobID, t.audioPath)
 		p.active.Add(-1)
 	}
 }
@@ -118,6 +127,7 @@ func (p *Pipeline) Close() {
 		return
 	}
 	p.closed = true
+	p.cancel()
 	close(p.queue)
 	p.mu.Unlock()
 	p.wg.Wait()
@@ -158,6 +168,19 @@ func (p *Pipeline) Run(parent context.Context, jobID, audioPath string) {
 
 	tr, err := p.transcribe(ctx, audioPath)
 	if err != nil {
+		if parent.Err() != nil {
+			// A clean shutdown must not fail the active job or drain the
+			// backlog. Resume this unfinished recording after restart.
+			_ = p.Store.Update(jobID, func(j *job.Job) {
+				j.Status = job.StatusQueued
+				j.Stage = "queued"
+				j.Error = "transcribe interrupted; queued for retry: " + err.Error()
+				if j.Attempts > 0 {
+					j.Attempts--
+				}
+			})
+			return
+		}
 		p.fail(jobID, nil, "transcribe: "+err.Error())
 		log.Printf("pipeline: %s transcribe failed: %v", jobID, err)
 		return
@@ -177,6 +200,16 @@ func (p *Pipeline) Run(parent context.Context, jobID, audioPath string) {
 		Segments: segs,
 		Backend:  p.Backend,
 	}
+	for _, event := range tr.AudioEvents {
+		copied := job.AudioEvent{Start: event.Start, End: event.End}
+		if event.Tags != nil {
+			copied.Tags = make([]job.AudioEventTag, len(event.Tags))
+		}
+		for i, tag := range event.Tags {
+			copied.Tags[i] = job.AudioEventTag{Label: tag.Label, Score: tag.Score}
+		}
+		res.AudioEvents = append(res.AudioEvents, copied)
+	}
 	// 合并任务：把来源偏移带进结果，前端可把整段转写映射回原始分段。
 	if j, ok := p.Store.Get(jobID); ok {
 		res.Kind = j.Kind
@@ -184,7 +217,16 @@ func (p *Pipeline) Run(parent context.Context, jobID, audioPath string) {
 	}
 	_ = p.Store.Update(jobID, func(j *job.Job) {
 		j.Stage = "analyzing"
-		j.Result = res
+		// Publish an immutable snapshot. The worker adds analysis to res
+		// below while API readers may already be reading this transcript.
+		transcriptOnly := *res
+		transcriptOnly.AudioEvents = append([]job.AudioEvent(nil), res.AudioEvents...)
+		for i := range transcriptOnly.AudioEvents {
+			if res.AudioEvents[i].Tags != nil {
+				transcriptOnly.AudioEvents[i].Tags = append([]job.AudioEventTag{}, res.AudioEvents[i].Tags...)
+			}
+		}
+		j.Result = &transcriptOnly
 	})
 
 	an, err := p.analyze(ctx, tr)
@@ -218,9 +260,28 @@ func (p *Pipeline) Run(parent context.Context, jobID, audioPath string) {
 }
 
 func (p *Pipeline) transcribe(ctx context.Context, audioPath string) (*infer.Transcript, error) {
+	return p.transcribeWithRetry(ctx, audioPath, waitForASRRetry)
+}
+
+func waitForASRRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (p *Pipeline) transcribeWithRetry(ctx context.Context, audioPath string,
+	wait func(context.Context, time.Duration) error) (*infer.Transcript, error) {
 	var last error
-	for i := 0; i < p.retries; i++ {
+	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
+			if last != nil {
+				return nil, fmt.Errorf("ASR retry interrupted: %w; last error: %w", ctx.Err(), last)
+			}
 			return nil, ctx.Err()
 		}
 		tr, err := p.ASR.Transcribe(ctx, audioPath)
@@ -228,16 +289,16 @@ func (p *Pipeline) transcribe(ctx context.Context, audioPath string) (*infer.Tra
 			return tr, nil
 		}
 		last = err
-		log.Printf("pipeline: transcribe attempt %d/%d: %v", i+1, p.retries, err)
-		if i+1 < p.retries {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
+		if !infer.IsRetryableASRError(err) {
+			return nil, err
+		}
+		// Keep this job running while the backend is offline, leaving the rest
+		// of the backlog queued. The existing job context bounds all attempts.
+		log.Printf("pipeline: ASR unavailable (attempt %d), retry in 25s: %v", attempt, err)
+		if waitErr := wait(ctx, 25*time.Second); waitErr != nil {
+			return nil, fmt.Errorf("ASR retry interrupted: %w; last error: %w", waitErr, last)
 		}
 	}
-	return nil, last
 }
 
 func (p *Pipeline) analyze(ctx context.Context, tr *infer.Transcript) (*infer.Analysis, error) {

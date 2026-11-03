@@ -3,9 +3,12 @@ package job
 import (
 	"encoding/json"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,17 +43,31 @@ type SourceSpan struct {
 	Duration    float64 `json:"duration"`
 }
 
+// AudioEvent labels are optional acoustic hints, not claims about speech or a
+// real-world situation. Preserve the backend's time range and scored tags.
+type AudioEvent struct {
+	Start float64         `json:"start"`
+	End   float64         `json:"end"`
+	Tags  []AudioEventTag `json:"tags"`
+}
+
+type AudioEventTag struct {
+	Label string  `json:"label"`
+	Score float64 `json:"score"`
+}
+
 type Result struct {
-	JobID    string            `json:"job_id"`
-	Kind     string            `json:"kind,omitempty"` // segment | merge
-	Mode     string            `json:"mode"`
-	Duration float64           `json:"duration"`
-	Segments []Segment         `json:"segments"`
-	Sources  []SourceSpan      `json:"sources,omitempty"`
-	Summary  string            `json:"summary"`
-	Error    string            `json:"error,omitempty"`
-	Analysis json.RawMessage   `json:"analysis,omitempty"`
-	Backend  map[string]string `json:"backend,omitempty"`
+	JobID       string            `json:"job_id"`
+	Kind        string            `json:"kind,omitempty"` // segment | merge
+	Mode        string            `json:"mode"`
+	Duration    float64           `json:"duration"`
+	Segments    []Segment         `json:"segments"`
+	AudioEvents []AudioEvent      `json:"audio_events,omitempty"`
+	Sources     []SourceSpan      `json:"sources,omitempty"`
+	Summary     string            `json:"summary"`
+	Error       string            `json:"error,omitempty"`
+	Analysis    json.RawMessage   `json:"analysis,omitempty"`
+	Backend     map[string]string `json:"backend,omitempty"`
 }
 
 type Job struct {
@@ -74,6 +91,63 @@ type Job struct {
 	CreatedAt      time.Time    `json:"created_at"`
 	UpdatedAt      time.Time    `json:"updated_at"`
 	Result         *Result      `json:"result,omitempty"`
+}
+
+var recordingFilename = regexp.MustCompile(`^rec_([0-9]{8}_[0-9]{6})(?:_([0-9]{3}))?\.(?:aac|m4a)$`)
+
+// RecordingStart accepts both current uploads (RecordedAt is the start) and
+// older uploads (RecordedAt was the file's modification/end time). Filenames
+// have no timezone, so only a nearby candidate may refine an existing epoch.
+// Never reinterpret a merged title or a distant filename as a recording clock.
+func RecordingStart(j *Job) time.Time {
+	duration := recordingDuration(j)
+	if j.RecordedAt <= 0 {
+		return j.CreatedAt.Add(-duration)
+	}
+	epoch := time.UnixMilli(j.RecordedAt)
+	if j.Kind != "" && j.Kind != "segment" {
+		return epoch
+	}
+	parts := recordingFilename.FindStringSubmatch(j.SegmentName)
+	if parts == nil {
+		return epoch
+	}
+	candidate, err := time.ParseInLocation("20060102_150405", parts[1], time.Local)
+	if err != nil || candidate.Format("20060102_150405") != parts[1] {
+		return epoch
+	}
+	if parts[2] != "" {
+		millis, _ := strconv.Atoi(parts[2])
+		candidate = candidate.Add(time.Duration(millis) * time.Millisecond)
+	}
+	window := 10 * time.Minute
+	if duration > window {
+		window = duration
+	}
+	delta := epoch.Sub(candidate)
+	if delta < -5*time.Second || delta > window+5*time.Second {
+		return epoch
+	}
+	return candidate
+}
+
+func recordingDuration(j *Job) time.Duration {
+	var seconds float64
+	if j.Result != nil {
+		seconds = j.Result.Duration
+		if seconds <= 0 {
+			for _, segment := range j.Result.Segments {
+				if segment.End > seconds {
+					seconds = segment.End
+				}
+			}
+		}
+	}
+	// Leave enough room for RecordingStart's tolerance when converting seconds.
+	if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds >= float64(math.MaxInt64-int64(5*time.Second))/float64(time.Second) {
+		return 0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 type Store struct {
@@ -190,8 +264,8 @@ func (s *Store) CreateFull(j *Job) (*Job, bool) {
 
 func (s *Store) Get(id string) (*Job, bool) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	j, ok := s.jobs[id]
-	s.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
@@ -221,13 +295,12 @@ func (s *Store) FindIdem(key string) (*Job, bool) {
 		return nil, false
 	}
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	id, ok := s.idem[key]
 	if !ok {
-		s.mu.RUnlock()
 		return nil, false
 	}
 	j := s.jobs[id]
-	s.mu.RUnlock()
 	if j == nil {
 		return nil, false
 	}
@@ -306,10 +379,7 @@ func (s *Store) CompletedBetween(startMs, endMs int64) []*Job {
 		if j.Result == nil || len(j.Result.Segments) == 0 {
 			continue
 		}
-		ts := j.RecordedAt
-		if ts == 0 {
-			ts = j.CreatedAt.UnixMilli()
-		}
+		ts := RecordingStart(j).UnixMilli()
 		if ts < startMs || ts >= endMs {
 			continue
 		}
@@ -317,14 +387,7 @@ func (s *Store) CompletedBetween(startMs, endMs int64) []*Job {
 	}
 	s.mu.RUnlock()
 	sort.Slice(out, func(i, k int) bool {
-		ti, tk := out[i].RecordedAt, out[k].RecordedAt
-		if ti == 0 {
-			ti = out[i].CreatedAt.UnixMilli()
-		}
-		if tk == 0 {
-			tk = out[k].CreatedAt.UnixMilli()
-		}
-		return ti < tk
+		return RecordingStart(out[i]).Before(RecordingStart(out[k]))
 	})
 	return out
 }
@@ -339,10 +402,7 @@ func (s *Store) UnfinishedBetween(startMs, endMs int64) int {
 		if j.Kind == "merge" || (j.Status != StatusQueued && j.Status != StatusRunning) {
 			continue
 		}
-		ts := j.RecordedAt
-		if ts == 0 {
-			ts = j.CreatedAt.UnixMilli()
-		}
+		ts := RecordingStart(j).UnixMilli()
 		if ts >= startMs && ts < endMs {
 			n++
 		}
@@ -477,8 +537,20 @@ func cloneJob(j *Job) *Job {
 		if j.Result.Sources != nil {
 			r.Sources = append([]SourceSpan(nil), j.Result.Sources...)
 		}
+		r.AudioEvents = append([]AudioEvent(nil), j.Result.AudioEvents...)
+		for i := range r.AudioEvents {
+			if j.Result.AudioEvents[i].Tags != nil {
+				r.AudioEvents[i].Tags = append([]AudioEventTag{}, j.Result.AudioEvents[i].Tags...)
+			}
+		}
 		if j.Result.Analysis != nil {
 			r.Analysis = append(json.RawMessage(nil), j.Result.Analysis...)
+		}
+		if j.Result.Backend != nil {
+			r.Backend = make(map[string]string, len(j.Result.Backend))
+			for key, value := range j.Result.Backend {
+				r.Backend[key] = value
+			}
 		}
 		cp.Result = &r
 	}

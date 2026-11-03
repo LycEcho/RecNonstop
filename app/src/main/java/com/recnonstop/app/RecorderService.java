@@ -14,9 +14,12 @@ import android.content.pm.ServiceInfo;
 import android.media.AudioManager;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Process;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.File;
@@ -27,6 +30,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class RecorderService extends Service {
 
@@ -68,11 +72,18 @@ public class RecorderService extends Service {
     private static final long LOW_SPACE_WARN_BYTES = 1024L * 1024 * 1024;
     /** 开段失败最大退避 */
     private static final long MAX_BACKOFF_MS = 5 * 60 * 1000L;
+    /** 跨服务实例串行化录音和孤儿恢复，系统销毁服务时旧线程可能仍在关段。 */
+    private static final ReentrantLock RECORDING_LOCK = new ReentrantLock();
 
     private long segmentMs = DEFAULT_SEGMENT_MS;
 
     private volatile boolean running = false;
     private Thread worker;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean restartAfterStop = false;
+    private boolean destroyed = false;
+    private volatile boolean stoppedByUser = false;
+    private int stopAfterWorkerId = 0;
     private MediaRecorder recorder;
     private File currentFile;
     private File currentPart;
@@ -108,7 +119,6 @@ public class RecorderService extends Service {
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         Notifications.ensure(this);
         UploadStore.get(this).migrateFromPrefs(this);
-        recoverParts();
         Uploader.start(this);
     }
 
@@ -122,13 +132,15 @@ public class RecorderService extends Service {
         for (File p : parts) {
             String name = p.getName();
             File dst = new File(dir, name.substring(0, name.length() - 5));
-            if (p.length() >= 1024 && Adts.isValid(p)) {
-                if (p.renameTo(dst)) {
+            if (Adts.recover(p)) {
+                if (!dst.exists() && p.renameTo(dst)) {
                     Diag.log(this, TAG, "recovered orphan " + name + " -> " + dst.getName());
+                    Health.segmentClosed(this, dst);
                 } else {
                     Diag.log(this, TAG, "recover rename failed " + name);
                 }
-            } else {
+            } else if (p.length() == 0L) {
+                // 只自动清理空文件；暂时不可读/恢复失败的文件留待下次恢复。
                 //noinspection ResultOfMethodCallIgnored
                 p.delete();
             }
@@ -141,6 +153,7 @@ public class RecorderService extends Service {
                 ? intent.getAction() : ACTION_START;
 
         if (ACTION_RESTART.equals(action)) {
+            stopAfterWorkerId = 0;
             // 用户从通知点“恢复”：通知交互属于 Android 的免限制场景，
             // 重新打开 MediaRecorder 可以修复后台启动导致的麦克风静音。
             try {
@@ -168,10 +181,13 @@ public class RecorderService extends Service {
                     .commit();
             stopRecording(true);
             stopForeground(true);
-            stopSelf();
+            // 关段完成前保留这个服务实例，快速再次开始时不会让新实例抢同一个 .part。
+            stopAfterWorkerId = startId;
+            if (worker == null || !worker.isAlive()) stopSelfResult(startId);
             return START_NOT_STICKY;
         }
 
+        stopAfterWorkerId = 0;
         try {
             startForeground(NOTIF_ID, buildNotification("准备中"),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
@@ -188,14 +204,13 @@ public class RecorderService extends Service {
                 .putBoolean("enabled", true)
                 .putLong(KEY_NEXT_START_AT, 0L)
                 .commit();
-        Health.serviceStart(this);
         Diag.log(this, TAG, "foreground started");
 
         // 进程还活着但录音线程死了时，看门狗发来的 START 要能真正重启循环。
         if (running) {
             boolean dead = worker == null || !worker.isAlive();
             boolean stuck = lastLoopTickMs > 0
-                    && System.currentTimeMillis() - lastLoopTickMs > 5 * 60_000L;
+                    && SystemClock.elapsedRealtime() - lastLoopTickMs > 5 * 60_000L;
             if (dead) {
                 Diag.log(this, TAG, "restart dead loop");
                 Health.error(this, "录音线程已退出，正在重启");
@@ -240,15 +255,15 @@ public class RecorderService extends Service {
     // ---------------- 录音主循环 ----------------
 
     private void startRecording() {
+        if (destroyed) return;
+        if (worker != null && worker.isAlive()) {
+            // 旧线程可能仍在 prepare/stop；等它完成关段后再开始，不能共享录音器。
+            restartAfterStop = true;
+            return;
+        }
+        restartAfterStop = false;
+        stoppedByUser = false;
         running = true;
-        RecState.running = true;
-        RecState.paused = false;
-        RecState.lowLevel = false;
-        RecState.recordStartMs = System.currentTimeMillis();
-        RecState.pausedAt = 0L;
-        RecState.pausedTotalMs = 0L;
-        RecState.segmentCount = 0;
-        RecState.lastError = "";
         segmentMs = Settings.segmentMs(this);
 
         lowStartMs = 0L;
@@ -265,12 +280,8 @@ public class RecorderService extends Service {
         storageWarned = false;
         spaceWarned = false;
         lastCleanupMs = 0L;
-
-        acquireWake();
-        Uploader.start(this);
-        Uploader.scanPendingAsync(this);
-
-        worker = new Thread(this::loop, "rec-loop");
+        lastLoopTickMs = SystemClock.elapsedRealtime();
+        worker = new Thread(this::runRecordingLoop, "rec-loop");
         worker.start();
 
         if (Settings.getBool(this, Settings.KEY_WATCHDOG, true)) {
@@ -279,10 +290,35 @@ public class RecorderService extends Service {
         Diag.log(this, TAG, "recording started, segment=" + segmentMs + "ms");
     }
 
+    private void runRecordingLoop() {
+        try {
+            RECORDING_LOCK.lockInterruptibly();
+            try {
+                if (running) loop();
+            } finally {
+                RECORDING_LOCK.unlock();
+            }
+        } catch (InterruptedException ignored) {
+            // 等待旧服务收尾时也可以取消，不会开启新的录音器。
+        } finally {
+            running = false;
+            Thread finished = Thread.currentThread();
+            mainHandler.post(() -> {
+                if (worker != finished) return;
+                worker = null;
+                if (restartAfterStop && !destroyed) {
+                    startRecording();
+                } else if (stopAfterWorkerId != 0) {
+                    stopSelfResult(stopAfterWorkerId);
+                }
+            });
+        }
+    }
+
     /** 按保留天数清理旧录音：保护未上传文件，且放到独立线程，不阻塞切段。 */
     private void cleanupOldAsync() {
-        long now = System.currentTimeMillis();
-        if (now - lastCleanupMs < 30_000L) {
+        long now = SystemClock.elapsedRealtime();
+        if (lastCleanupMs > 0L && now - lastCleanupMs < 30_000L) {
             return;
         }
         lastCleanupMs = now;
@@ -339,141 +375,165 @@ public class RecorderService extends Service {
     }
 
     private void loop() {
-        File dir = recDir();
-        if (!dir.exists() && !dir.mkdirs()) {
-            String msg = "无法创建录音目录：" + dir;
-            RecState.lastError = msg;
-            Health.error(this, msg);
-            Notifications.alert(this, 2003, "录不停无法开始", msg);
-            running = false;
-            RecState.running = false;
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                    .putLong(KEY_NEXT_START_AT, System.currentTimeMillis() + 15 * 60_000L)
-                    .commit();
-            return;
-        }
-        cleanupOldAsync();
-        lastLoopTickMs = System.currentTimeMillis();
-
         try {
-        while (running) {
-            try {
-                lastLoopTickMs = System.currentTimeMillis();
-                segmentMs = Settings.segmentMs(this);
+            RecState.running = true;
+            RecState.paused = false;
+            RecState.lowLevel = false;
+            RecState.recordStartMs = System.currentTimeMillis();
+            RecState.pausedAt = 0L;
+            RecState.pausedTotalMs = 0L;
+            RecState.segmentCount = 0;
+            RecState.lastError = "";
+            Health.serviceStart(this);
+            acquireWake();
+            recoverParts();
+            Uploader.start(this);
+            Uploader.scanPendingAsync(this);
+            File dir = recDir();
+            if (!dir.exists() && !dir.mkdirs()) {
+                String msg = "无法创建录音目录：" + dir;
+                RecState.lastError = msg;
+                Health.error(this, msg);
+                Notifications.alert(this, 2003, "录不停无法开始", msg);
+                running = false;
+                RecState.running = false;
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putLong(KEY_NEXT_START_AT, System.currentTimeMillis() + 15 * 60_000L)
+                        .commit();
+                return;
+            }
+            cleanupOldAsync();
+            lastLoopTickMs = SystemClock.elapsedRealtime();
 
-                // 1. 通话中：暂停
-                if (callBlocking()) {
-                    closeSegment();
-                    markPauseStart();
-                    openGap();
-                    checkPauseTimeout();
-                    sleepInterruptible(1000L);
-                    continue;
-                }
+            while (running) {
+                try {
+                    lastLoopTickMs = SystemClock.elapsedRealtime();
+                    segmentMs = Settings.segmentMs(this);
 
-                pauseStartMs = 0L;
-
-                if (zeroRecoverRequested) {
-                    zeroRecoverRequested = false;
-                    recoverFromSilence();
-                    sleepInterruptible(500L);
-                }
-
-                // 2. 空间检查：不退出循环，空间恢复后自动继续
-                long free = dir.getUsableSpace();
-                if (free < MIN_FREE_BYTES) {
-                    closeSegment();
-                    if (!storageWarned) {
-                        storageWarned = true;
-                        String msg = "存储空间不足（剩余 " + (free / 1048576)
-                                + " MB），录音已暂停；腾出空间后会自动继续。";
-                        RecState.lastError = msg;
-                        Health.error(this, msg);
-                        notifyText(msg);
-                        Notifications.alert(this, 2004, "录不停已暂停", msg);
-                        Diag.log(this, TAG, msg);
+                    // 1. 通话中：暂停
+                    if (callBlocking()) {
+                        closeSegment();
+                        markPauseStart();
+                        openGap();
+                        checkPauseTimeout();
+                        sleepInterruptible(1000L);
+                        continue;
                     }
-                    sleepInterruptible(5000L);
-                    continue;
-                }
-                if (storageWarned) {
-                    storageWarned = false;
-                    RecState.lastError = "";
-                    notifyText("空间已恢复，继续录音");
-                    Diag.log(this, TAG, "storage recovered");
-                }
-                if (!spaceWarned && free < LOW_SPACE_WARN_BYTES) {
-                    spaceWarned = true;
-                    Notifications.alert(this, 2005, "录不停空间偏低",
-                            "剩余 " + (free / 1048576) + " MB，建议清理旧录音或缩短保留天数。");
-                } else if (spaceWarned && free > LOW_SPACE_WARN_BYTES * 3 / 2) {
-                    spaceWarned = false;
-                }
 
-                // 3. 开新段：失败退避，永不因临时错误自杀
-                if (!openSegment(dir)) {
-                    consecutiveFailures++;
-                    long backoff = Math.min(MAX_BACKOFF_MS,
-                            5000L * (1L << Math.min(consecutiveFailures, 5)));
-                    if (consecutiveFailures == 3 || consecutiveFailures == 10
-                            || consecutiveFailures % 30 == 0) {
-                        String msg = "无法开始录音（第 " + consecutiveFailures + " 次）："
-                                + RecState.lastError + "；" + (backoff / 1000) + " 秒后重试";
-                        Health.error(this, msg);
-                        notifyText(msg);
-                        Diag.log(this, TAG, msg);
-                    }
-                    sleepInterruptible(backoff);
-                    continue;
-                }
-                consecutiveFailures = 0;
+                    pauseStartMs = 0L;
 
-                // 定期清理旧文件（大约每小时一次）
-                if (RecState.segmentCount % 20 == 0) {
-                    cleanupOldAsync();
-                }
-
-                closeGap();
-                long start = System.currentTimeMillis();
-
-                // 4. 录制直到超时 / 来电
-                while (running && !callBlocking()
-                        && System.currentTimeMillis() - start < segmentMs) {
-                    sleepInterruptible(500L);
-                    sampleLevel();
-                    maybeNotify();
                     if (zeroRecoverRequested) {
-                        // 先关掉这一段，回到外层循环重新声明前台并重建 MediaRecorder。
+                        zeroRecoverRequested = false;
+                        recoverFromSilence();
+                        sleepInterruptible(500L);
+                    }
+
+                    // 2. 空间检查：不退出循环，空间恢复后自动继续
+                    long free = dir.getUsableSpace();
+                    if (free < MIN_FREE_BYTES) {
+                        closeSegment();
+                        if (!storageWarned) {
+                            storageWarned = true;
+                            String msg = "存储空间不足（剩余 " + (free / 1048576)
+                                    + " MB），录音已暂停；腾出空间后会自动继续。";
+                            RecState.lastError = msg;
+                            Health.error(this, msg);
+                            notifyText(msg);
+                            Notifications.alert(this, 2004, "录不停已暂停", msg);
+                            Diag.log(this, TAG, msg);
+                        }
+                        sleepInterruptible(5000L);
+                        continue;
+                    }
+                    if (storageWarned) {
+                        storageWarned = false;
+                        RecState.lastError = "";
+                        notifyText("空间已恢复，继续录音");
+                        Diag.log(this, TAG, "storage recovered");
+                    }
+                    if (!spaceWarned && free < LOW_SPACE_WARN_BYTES) {
+                        spaceWarned = true;
+                        Notifications.alert(this, 2005, "录不停空间偏低",
+                                "剩余 " + (free / 1048576) + " MB，建议清理旧录音或缩短保留天数。");
+                    } else if (spaceWarned && free > LOW_SPACE_WARN_BYTES * 3 / 2) {
+                        spaceWarned = false;
+                    }
+
+                    // 3. 开新段：失败退避，永不因临时错误自杀
+                    if (!openSegment(dir)) {
+                        consecutiveFailures++;
+                        long backoff = Math.min(MAX_BACKOFF_MS,
+                                5000L * (1L << Math.min(consecutiveFailures, 5)));
+                        if (consecutiveFailures == 3 || consecutiveFailures == 10
+                                || consecutiveFailures % 30 == 0) {
+                            String msg = "无法开始录音（第 " + consecutiveFailures + " 次）："
+                                    + RecState.lastError + "；" + (backoff / 1000) + " 秒后重试";
+                            Health.error(this, msg);
+                            notifyText(msg);
+                            Diag.log(this, TAG, msg);
+                        }
+                        sleepInterruptible(backoff);
+                        continue;
+                    }
+                    consecutiveFailures = 0;
+
+                    // 定期清理旧文件（大约每小时一次）
+                    if (RecState.segmentCount % 20 == 0) {
+                        cleanupOldAsync();
+                    }
+
+                    closeGap();
+                    long start = SystemClock.elapsedRealtime();
+
+                    // 4. 录制直到超时 / 来电
+                    while (running && !callBlocking()
+                            && SystemClock.elapsedRealtime() - start < segmentMs) {
+                        sleepInterruptible(500L);
+                        sampleLevel();
+                        maybeNotify();
+                        if (zeroRecoverRequested) {
+                            // 先关掉这一段，回到外层循环重新声明前台并重建 MediaRecorder。
+                            break;
+                        }
+                    }
+
+                    boolean callNow = callBlocking();
+                    closeSegment();
+                    if (callNow) {
+                        markPauseStart();
+                        openGap();
+                    }
+
+                } catch (InterruptedException ie) {
+                    break;
+                } catch (Throwable t) {
+                    RecState.lastError = String.valueOf(t);
+                    Health.error(this, "录音循环异常：" + t);
+                    Diag.error(this, TAG, "loop error", t);
+                    closeSegment();
+                    try {
+                        sleepInterruptible(1000L);
+                    } catch (InterruptedException ignored) {
                         break;
                     }
                 }
-
-                boolean callNow = callBlocking();
-                closeSegment();
-                if (callNow) {
-                    markPauseStart();
-                    openGap();
-                }
-
-            } catch (InterruptedException ie) {
-                break;
-            } catch (Throwable t) {
-                RecState.lastError = String.valueOf(t);
-                Health.error(this, "录音循环异常：" + t);
-                Diag.error(this, TAG, "loop error", t);
-                closeSegment();
-                try {
-                    sleepInterruptible(1000L);
-                } catch (InterruptedException ignored) {
-                    break;
-                }
             }
-        }
         } finally {
-            if (running) {
-                // 线程意外退出：把状态翻过来，让看门狗能重新拉起。
-                running = false;
+            boolean unexpected = running;
+            running = false;
+            try {
+                // MediaRecorder 的关闭与采样/开段都只由这一个线程执行。
+                closeSegment();
+                if (gapOpen) closeGap();
+            } finally {
                 RecState.running = false;
+                RecState.paused = false;
+                releaseWake();
+                Health.serviceStopped(this, stoppedByUser);
+                Diag.log(this, TAG, "recording stopped user=" + stoppedByUser);
+            }
+            if (unexpected) {
+                // 线程意外退出：把状态翻过来，让看门狗能重新拉起。
                 Health.error(this, "录音循环意外退出");
                 Diag.log(this, TAG, "loop exited unexpectedly");
             }
@@ -481,9 +541,10 @@ public class RecorderService extends Service {
     }
 
     private void sleepInterruptible(long ms) throws InterruptedException {
-        long end = System.currentTimeMillis() + ms;
-        while (running && System.currentTimeMillis() < end) {
-            Thread.sleep(Math.min(500L, Math.max(1L, end - System.currentTimeMillis())));
+        long end = SystemClock.elapsedRealtime() + ms;
+        while (running && SystemClock.elapsedRealtime() < end) {
+            lastLoopTickMs = SystemClock.elapsedRealtime();
+            Thread.sleep(Math.min(500L, Math.max(1L, end - SystemClock.elapsedRealtime())));
         }
         if (!running) {
             throw new InterruptedException("stopped");
@@ -500,13 +561,13 @@ public class RecorderService extends Service {
     }
 
     private void markPauseStart() {
-        if (pauseStartMs == 0L) pauseStartMs = System.currentTimeMillis();
+        if (pauseStartMs == 0L) pauseStartMs = SystemClock.elapsedRealtime();
     }
 
     /** 暂停超过 2 小时，判定为模式卡住，强制恢复 */
     private void checkPauseTimeout() {
         if (pauseStartMs == 0L) return;
-        long paused = System.currentTimeMillis() - pauseStartMs;
+        long paused = SystemClock.elapsedRealtime() - pauseStartMs;
         if (!forcedResume && paused > MAX_PAUSE_MS) {
             forcedResume = true;
             writeGap("pause_timeout");
@@ -547,7 +608,9 @@ public class RecorderService extends Service {
         }
 
         double db = 20 * Math.log10(Math.max(amp, 1) / 32767.0);
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
+        RecState.levelDb = (float) db;
+        RecState.levelSampleMs = now;
 
         // amp==0 是数字静音，正常房间的麦克风自噪声也不会是 0。
         // 这种情况多半是权限/AppOps/前台状态被系统拦了，光写日志没用，必须重启录音器。
@@ -556,7 +619,8 @@ public class RecorderService extends Service {
                 zeroStartMs = now;
             } else if (!zeroRecoverRequested
                     && now - zeroStartMs >= ZERO_RECOVER_MS
-                    && now - lastZeroRecoverMs >= ZERO_RECOVER_COOLDOWN_MS) {
+                    && (lastZeroRecoverMs == 0L
+                            || now - lastZeroRecoverMs >= ZERO_RECOVER_COOLDOWN_MS)) {
                 zeroRecoverRequested = true;
                 Diag.log(this, TAG, "digital silence for "
                         + (now - zeroStartMs) / 1000 + " s, requesting recorder restart");
@@ -605,7 +669,7 @@ public class RecorderService extends Service {
      * 只重启 MediaRecorder 修不了 AppOps 拦截，所以先重新 startForeground。
      */
     private void recoverFromSilence() {
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
         if (zeroRecoverWindowStart == 0L || now - zeroRecoverWindowStart > ZERO_RECOVER_WINDOW_MS) {
             zeroRecoverWindowStart = now;
             zeroRecoverAttempts = 0;
@@ -662,16 +726,20 @@ public class RecorderService extends Service {
         RecState.lastError = msg;
         Health.error(this, msg);
         Notifications.alert(this, id, title, msg);
-        lastZeroRecoverMs = System.currentTimeMillis() + ZERO_RECOVER_PAUSE_MS;
+        lastZeroRecoverMs = SystemClock.elapsedRealtime() + ZERO_RECOVER_PAUSE_MS;
         Diag.log(this, TAG, msg);
     }
 
     private boolean openSegment(File dir) {
-        String name = "rec_" + stamp() + ".aac";
-        File f = new File(dir, name);
-        File part = new File(dir, name + ".part");
-        //noinspection ResultOfMethodCallIgnored
-        part.delete();
+        long timestamp = System.currentTimeMillis();
+        String name;
+        File f;
+        File part;
+        do {
+            name = "rec_" + stamp(timestamp++) + ".aac";
+            f = new File(dir, name);
+            part = new File(dir, name + ".part");
+        } while (f.exists() || part.exists());
 
         MediaRecorder mr = null;
         try {
@@ -711,8 +779,11 @@ public class RecorderService extends Service {
             recorder = null;
             currentFile = null;
             currentPart = null;
-            //noinspection ResultOfMethodCallIgnored
-            part.delete();
+            // 编码器失败也可能已经写出部分音频，非空 .part 留待下次恢复。
+            if (part.length() == 0L) {
+                //noinspection ResultOfMethodCallIgnored
+                part.delete();
+            }
             return false;
         }
     }
@@ -725,9 +796,14 @@ public class RecorderService extends Service {
         currentFile = null;
         currentPart = null;
         RecState.currentFile = "";
+        RecState.segmentStartMs = 0L;
 
+        boolean stoppedCleanly = false;
         if (mr != null) {
-            try { mr.stop(); } catch (Throwable t) { Diag.log(this, TAG, "stop: " + t); }
+            try {
+                mr.stop();
+                stoppedCleanly = true;
+            } catch (Throwable t) { Diag.log(this, TAG, "stop: " + t); }
             try { mr.reset(); } catch (Throwable ignored) {}
             try { mr.release(); } catch (Throwable ignored) {}
         }
@@ -735,19 +811,20 @@ public class RecorderService extends Service {
         File closed = null;
         if (part != null && part.exists()) {
             long len = part.length();
-            if (len >= 1024 && Adts.isValid(part)) {
-                if (finalFile != null && part.renameTo(finalFile)) {
+            if (stoppedCleanly ? Adts.isValid(part) : Adts.recover(part)) {
+                if (finalFile != null && !finalFile.exists() && part.renameTo(finalFile)) {
                     closed = finalFile;
                 } else {
                     // rename 失败（极少见）：保留 .part，下次启动可恢复。
                     Diag.log(this, TAG, "rename part failed: " + part.getName());
-                    closed = part;
                 }
             } else {
-                Diag.log(this, TAG, "discard invalid segment " + part.getName()
+                Diag.log(this, TAG, "unusable segment retained for recovery " + part.getName()
                         + " size=" + len);
-                //noinspection ResultOfMethodCallIgnored
-                part.delete();
+                if (len == 0L) {
+                    //noinspection ResultOfMethodCallIgnored
+                    part.delete();
+                }
             }
         } else if (finalFile != null && finalFile.exists()) {
             // 兼容旧版本直接写 .aac 的文件
@@ -762,7 +839,7 @@ public class RecorderService extends Service {
             writeGap("low_level_end");
         }
 
-        if (closed != null && closed.exists() && closed.length() >= 1024) {
+        if (closed != null && closed.exists()) {
             Health.segmentClosed(this, closed);
             Uploader.enqueue(this, closed);
             Diag.log(this, TAG, "segment closed " + closed.getName()
@@ -835,7 +912,7 @@ public class RecorderService extends Service {
     }
 
     private void maybeNotify() {
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
         if (now - lastNotifMs < NOTIF_INTERVAL_MS) return;
         lastNotifMs = now;
         updateNotification();
@@ -895,28 +972,24 @@ public class RecorderService extends Service {
     }
 
     private void stopRecording(boolean userStopped) {
-        if (!running && worker == null && recorder == null && !gapOpen) {
-            return;
-        }
+        restartAfterStop = false;
+        if (userStopped) stoppedByUser = true;
         running = false;
-        RecState.running = false;
-        RecState.paused = false;
-        closeSegment();
-        if (gapOpen) closeGap();
         if (worker != null) {
             worker.interrupt();
-            worker = null;
         }
+    }
+
+    private void releaseWake() {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
-            wakeLock = null;
         }
-        Health.serviceStopped(this, userStopped);
-        Diag.log(this, TAG, "recording stopped user=" + userStopped);
+        wakeLock = null;
     }
 
     @Override
     public void onDestroy() {
+        destroyed = true;
         stopRecording(false);
         cleanupExec.shutdownNow();
         super.onDestroy();
@@ -949,9 +1022,9 @@ public class RecorderService extends Service {
 
     private File recDir() { return recDirOf(this); }
 
-    private static String stamp() {
+    private static String stamp(long timestamp) {
         return new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
-                .format(new Date());
+                .format(new Date(timestamp));
     }
 
     private static String fmt(long ms) {

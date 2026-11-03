@@ -8,8 +8,8 @@ android {
         applicationId "com.recnonstop.app"
         minSdk 29
         targetSdk 35
-        versionCode 13
-        versionName "1.3"
+        versionCode 15
+        versionName "1.5"
     }
 
     buildTypes {

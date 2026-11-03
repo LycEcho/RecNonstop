@@ -57,7 +57,7 @@ final class TranscriptDialog {
         root.addView(header);
 
         TextView sub = new TextView(activity);
-        sub.setText(title + " · 点说话人标签改名字，保存后会记住声纹");
+        sub.setText(title + " · 点说话人标签设置名字");
         sub.setTextColor(activity.getColor(R.color.text_secondary));
         sub.setTextSize(11);
         sub.setPadding(0, dp(activity, 4), 0, dp(activity, 8));
@@ -92,18 +92,28 @@ final class TranscriptDialog {
         }
 
         PcApi.getResult(activity, jobId, (body, error) -> {
-            if (activity.isFinishing() || activity.isDestroyed()) return;
+            if (activity.isFinishing() || activity.isDestroyed() || !dialog.isShowing()) return;
             if (error != null) {
                 status.setText("读取失败：" + error);
                 return;
             }
             JSONArray segments = body == null ? null : body.optJSONArray("segments");
+            list.removeAllViews();
+            String soundHints = soundHints(body);
+            if (!soundHints.isEmpty()) {
+                TextView sounds = new TextView(activity);
+                sounds.setText("声音线索 · " + soundHints + "\n自动识别，仅供参考");
+                sounds.setTextColor(activity.getColor(R.color.text_secondary));
+                sounds.setTextSize(12);
+                sounds.setPadding(dp(activity, 12), dp(activity, 10), dp(activity, 12), dp(activity, 10));
+                sounds.setBackgroundResource(R.drawable.bg_card);
+                list.addView(sounds);
+            }
             if (segments == null || segments.length() == 0) {
-                status.setText("电脑还没返回分段。等分析完成后再试。");
+                status.setText(soundHints.isEmpty() ? "电脑还没返回分段。等分析完成后再试。" : "暂无可显示的语音转写，声音线索可供参考。");
                 return;
             }
             status.setText("共 " + segments.length() + " 句。点说话人标签命名。");
-            list.removeAllViews();
             chips.clear();
             names.clear();
             for (int i = 0; i < segments.length(); i++) {
@@ -118,6 +128,51 @@ final class TranscriptDialog {
         });
 
         dialog.show();
+    }
+
+    private static String soundHints(JSONObject body) {
+        JSONArray events = body == null ? null : body.optJSONArray("audio_events");
+        if (events == null) return "";
+        Map<String, Double> scores = new HashMap<>();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            JSONArray tags = event == null ? null : event.optJSONArray("tags");
+            if (tags == null) continue;
+            for (int j = 0; j < tags.length(); j++) {
+                JSONObject tag = tags.optJSONObject(j);
+                if (tag == null) continue;
+                String label = tag.optString("label", "").trim();
+                double score = tag.optDouble("score", Double.NaN);
+                if (label.isEmpty() || label.length() > 80 || label.contains("\n") || label.contains("\r")
+                        || Double.isNaN(score) || score < 0.5 || score > 1) continue;
+                Double previous = scores.get(label);
+                if (previous == null || score > previous) scores.put(label, score);
+            }
+        }
+        List<String> labels = new ArrayList<>(scores.keySet());
+        java.util.Collections.sort(labels, (a, b) -> {
+            int scoreOrder = Double.compare(scores.get(b), scores.get(a));
+            return scoreOrder == 0 ? a.compareTo(b) : scoreOrder;
+        });
+        List<String> visible = new ArrayList<>();
+        for (String label : labels) {
+            String display;
+            switch (label) {
+                case "Speech": display = "语音"; break;
+                case "Music": display = "音乐"; break;
+                case "Silence": display = "安静"; break;
+                case "Speech synthesizer": display = "合成语音"; break;
+                case "Singing": display = "歌声"; break;
+                case "Laughter": display = "笑声"; break;
+                case "Vehicle": display = "车辆声"; break;
+                case "Wind": display = "风声"; break;
+                case "Noise": display = "噪声"; break;
+                default: display = label;
+            }
+            if (!visible.contains(display)) visible.add(display);
+            if (visible.size() == 4) break;
+        }
+        return android.text.TextUtils.join(" · ", visible);
     }
 
     private static View buildRow(Activity activity, Dialog dialog, String jobId, JSONObject seg,
@@ -149,7 +204,7 @@ final class TranscriptDialog {
         chip.setOnClickListener(v -> {
             String cur = names.get(sp);
             Sheet.input(activity, "这是谁？",
-                    "给「" + displaySpeaker(sp) + "」命名。保存后会尝试把这段声音加入声纹库。",
+                    "为当前录音中的「" + displaySpeaker(sp) + "」设置名字。",
                     cur == null ? "" : cur, "例如：小王", "保存", value -> {
                         String name = value == null ? "" : value.trim();
                         if (name.isEmpty()) return;
@@ -157,6 +212,7 @@ final class TranscriptDialog {
                         chip.setText("保存中…");
                         final String finalName = name;
                         PcApi.markSpeaker(activity, jobId, sp, finalName, (res, err) -> {
+                            if (activity.isFinishing() || activity.isDestroyed() || !dialog.isShowing()) return;
                             if (err != null) {
                                 chip.setText(cur == null || cur.isEmpty() ? displaySpeaker(sp) : cur);
                                 status.setText("保存失败：" + err);
@@ -202,9 +258,15 @@ final class TranscriptDialog {
 
     private static String displaySpeaker(String sp) {
         if (sp == null || sp.isEmpty()) return "说话人";
-        String s = sp.replace("spk_", "").replace("spk", "").trim();
-        if (s.isEmpty()) s = "1";
-        return "说话人 " + (Integer.parseInt(s) + 1);
+        String s = sp.startsWith("spk_") ? sp.substring(4)
+                : sp.startsWith("spk") ? sp.substring(3) : sp;
+        try {
+            long index = Long.parseLong(s);
+            if (index >= 0 && index < Long.MAX_VALUE) return "说话人 " + (index + 1);
+        } catch (NumberFormatException ignored) {
+            // 分离服务也可能返回命名 ID；保留原标签，不能因格式差异崩溃。
+        }
+        return sp;
     }
 
     private static String formatTime(double sec) {
