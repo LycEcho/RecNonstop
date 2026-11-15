@@ -59,3 +59,6 @@
 ## 详细规则
 
 加载项目 skill `private-data` 获取完整清单、仓库外私密目录约定和提交前检查步骤。
+
+<!-- OpenViking memory pointer -->
+> 本项目可复用经验已统一沉淀到 OpenViking：`viking://user/default/memories/projects/recnonstop.md`；本文件原有规则继续有效。
